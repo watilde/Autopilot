@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeV1 } from '../src/devin/client-v1.js';
-import { normalizeV3 } from '../src/devin/client-v3.js';
+import { normalizeV3, pickLastDevinMessage } from '../src/devin/client-v3.js';
 import { inferApiVersion } from '../src/devin/types.js';
 
 /**
@@ -139,5 +139,55 @@ describe('v3 normalisation', () => {
     expect(normalizeV3({ ...base, status: 'exit', status_detail: 'finished' }).rawStatus).toBe(
       'exit/finished',
     );
+  });
+});
+
+describe('v3 blocking-question extraction', () => {
+  // Regression: v3 returns the array under `items`. Reading `messages` (the
+  // v1-shaped guess) failed silently and produced a blocked notice with no
+  // question — useless to whoever has to unblock it.
+  it('reads the array from items, not messages', () => {
+    expect(
+      pickLastDevinMessage({
+        items: [{ source: 'devin', message: 'need write access' }],
+      }),
+    ).toBe('need write access');
+  });
+
+  // Regression: the list includes our own dispatch prompt as source "user".
+  // A naive tail read echoed Autopilot's instructions back as Devin's question.
+  it('never returns our own prompt back as the question', () => {
+    const res = {
+      items: [
+        { source: 'devin', message: 'On it — cloning the repo.' },
+        { source: 'user', message: 'You are remediating a single, well-scoped defect…' },
+      ],
+    };
+    expect(pickLastDevinMessage(res)).toBe('On it — cloning the repo.');
+  });
+
+  it('takes the most recent agent message', () => {
+    expect(
+      pickLastDevinMessage({
+        items: [
+          { source: 'user', message: 'prompt' },
+          { source: 'devin', message: 'first' },
+          { source: 'devin', message: 'git push returned 403' },
+        ],
+      }),
+    ).toBe('git push returned 403');
+  });
+
+  it('returns null when the agent has not spoken yet', () => {
+    expect(pickLastDevinMessage({ items: [{ source: 'user', message: 'prompt' }] })).toBeNull();
+    expect(pickLastDevinMessage({})).toBeNull();
+  });
+
+  it('skips blank agent messages', () => {
+    expect(
+      pickLastDevinMessage({
+        items: [{ source: 'devin', message: 'real question' }, { source: 'devin', message: '   ' }],
+      }),
+    ).toBe('real question');
   });
 });

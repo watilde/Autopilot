@@ -250,6 +250,45 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Operator kill switch.
+   *
+   * A system that spends money per task needs a way to stop one without
+   * stopping the process. Removing the `autopilot` label only helps if a
+   * webhook is wired up — with the periodic scanner alone, or during a demo,
+   * queued work would otherwise dispatch the moment capacity frees.
+   *
+   * Terminating the Devin session is best-effort: the remediation is recorded
+   * as cancelled regardless, because a local record that disagrees with
+   * reality is worse than an orphaned remote session.
+   */
+  async cancel(id: number, reason = 'cancelled by operator'): Promise<Remediation | null> {
+    const r = this.store.get(id);
+    if (!r) return null;
+    if (isTerminal(r.state)) return r;
+
+    if (r.devinSessionId) {
+      try {
+        await this.devin.terminateSession(r.devinSessionId);
+      } catch (err) {
+        logger.warn(
+          { remediation: id, session: r.devinSessionId, err: (err as Error).message },
+          'could not terminate devin session; cancelling locally anyway',
+        );
+      }
+    }
+
+    const updated = this.store.transition(r.id, 'cancelled', { error: reason });
+    metrics.remediationsCompleted.inc({
+      outcome: 'cancelled',
+      category: r.category ?? 'unknown',
+      severity: r.severity ?? 'unknown',
+    });
+    metrics.activeRemediations.set(this.store.countActive());
+    logger.info({ remediation: id, issue: r.issueNumber, reason }, 'remediation cancelled');
+    return updated;
+  }
+
   // -------------------------------------------------------------------------
   // Reconcile
   // -------------------------------------------------------------------------

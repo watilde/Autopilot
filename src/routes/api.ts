@@ -75,6 +75,18 @@ export function registerApiRoutes(
     });
   });
 
+  /**
+   * Stop one remediation without stopping the service. Needed because the
+   * label-removal path only fires when a GitHub webhook is actually wired up.
+   */
+  app.post('/api/remediations/:id/cancel', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const { reason } = (req.body ?? {}) as { reason?: string };
+    const r = await orchestrator.cancel(Number(id), reason ?? 'cancelled by operator');
+    if (!r) return reply.code(404).send({ error: 'not found' });
+    return { id: r.id, issueNumber: r.issueNumber, state: r.state, error: r.error };
+  });
+
   app.post('/api/scan', async () => {
     const result = await scanner.scan();
     void orchestrator.tick();

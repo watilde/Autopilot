@@ -18,9 +18,41 @@ interface V3SessionResponse {
   acus_consumed?: number | null;
 }
 
+export interface V3Message {
+  /** `user` for anything we sent, `devin` for the agent's own replies. */
+  source?: string | null;
+  message?: string | null;
+  content?: string | null;
+  created_at?: string | null;
+}
+
 interface V3MessagesResponse {
-  messages?: Array<{ message?: string | null; content?: string | null; type?: string | null }>;
-  data?: Array<{ message?: string | null; content?: string | null; type?: string | null }>;
+  /** v3 paginates under `items`; the other keys are defensive fallbacks. */
+  items?: V3Message[];
+  messages?: V3Message[];
+  data?: V3Message[];
+}
+
+/**
+ * Picks the question to show a human when a session blocks.
+ *
+ * Two things make this less obvious than "take the last message". The list
+ * includes our own dispatch prompt with `source: "user"`, so a naive tail read
+ * echoes Autopilot's own instructions back onto the issue as though Devin had
+ * asked them. And v3 returns the array under `items`, not `messages` — reading
+ * the wrong key fails silently and yields a blocked notice with no question,
+ * which is exactly useless to whoever has to unblock it.
+ */
+export function pickLastDevinMessage(res: V3MessagesResponse): string | null {
+  const list = res.items ?? res.messages ?? res.data ?? [];
+  const text = (m: V3Message) => (m.message ?? m.content ?? '').trim();
+
+  for (let i = list.length - 1; i >= 0; i--) {
+    const m = list[i];
+    if (m && m.source !== 'user' && text(m)) return text(m);
+  }
+  // No agent message yet — better to say nothing than to quote ourselves.
+  return null;
 }
 
 /**
@@ -110,12 +142,7 @@ export class DevinV3Client implements DevinClient {
         'GET',
         `${this.base()}/${encodeURIComponent(sessionId)}/messages`,
       );
-      const list = res.messages ?? res.data ?? [];
-      for (let i = list.length - 1; i >= 0; i--) {
-        const m = list[i];
-        const text = m?.message ?? m?.content;
-        if (typeof text === 'string' && text.trim()) return text.trim();
-      }
+      return pickLastDevinMessage(res);
     } catch (err) {
       // Purely for the status comment — never let it break reconciliation.
       logger.debug({ sessionId, err: (err as Error).message }, 'could not fetch session messages');
