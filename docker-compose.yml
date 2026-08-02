@@ -1,0 +1,45 @@
+services:
+  autopilot:
+    build: .
+    image: autopilot:latest
+    ports:
+      - '${PORT:-8080}:8080'
+    environment:
+      # --- target repository ---
+      GITHUB_OWNER: ${GITHUB_OWNER:-watilde}
+      GITHUB_REPO: ${GITHUB_REPO:-superset}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      # Defaults to true so `docker compose up` works with no .env at all.
+      # Set to false (and provide a secret) for anything reachable publicly.
+      ALLOW_UNSIGNED_WEBHOOKS: ${ALLOW_UNSIGNED_WEBHOOKS:-true}
+
+      # --- devin ---
+      # mock by default: a reviewer can bring the whole system up and watch it
+      # work without a key and without spending ACUs.
+      DEVIN_MODE: ${DEVIN_MODE:-mock}
+      DEVIN_API_KEY: ${DEVIN_API_KEY:-}
+      DEVIN_API_BASE_URL: ${DEVIN_API_BASE_URL:-https://api.devin.ai/v1}
+      DEVIN_MAX_ACU: ${DEVIN_MAX_ACU:-10}
+
+      # --- policy ---
+      AUTOPILOT_LABEL: ${AUTOPILOT_LABEL:-autopilot}
+      MAX_CONCURRENT_SESSIONS: ${MAX_CONCURRENT_SESSIONS:-3}
+      RECONCILE_INTERVAL_MS: ${RECONCILE_INTERVAL_MS:-15000}
+      SESSION_TIMEOUT_MS: ${SESSION_TIMEOUT_MS:-3600000}
+      POST_ISSUE_COMMENTS: ${POST_ISSUE_COMMENTS:-true}
+
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      NODE_ENV: production
+    volumes:
+      - autopilot-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8080/healthz']
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  autopilot-data:
