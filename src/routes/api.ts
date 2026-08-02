@@ -87,6 +87,21 @@ export function registerApiRoutes(
     return { id: r.id, issueNumber: r.issueNumber, state: r.state, error: r.error };
   });
 
+  /**
+   * Answer a blocked session. `blocked` is the only non-terminal state the
+   * system cannot exit on its own, so this is the path back.
+   */
+  app.post('/api/remediations/:id/reply', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const { message } = (req.body ?? {}) as { message?: string };
+    if (!message?.trim()) return reply.code(400).send({ error: 'message is required' });
+
+    const r = await orchestrator.reply(Number(id), message);
+    if (!r) return reply.code(404).send({ error: 'not found, or has no Devin session' });
+    void orchestrator.tick();
+    return { id: r.id, issueNumber: r.issueNumber, state: r.state };
+  });
+
   app.post('/api/scan', async () => {
     const result = await scanner.scan();
     void orchestrator.tick();

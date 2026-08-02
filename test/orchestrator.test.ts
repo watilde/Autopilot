@@ -189,3 +189,50 @@ describe('audit trail', () => {
     expect(states).toContain('succeeded');
   });
 });
+
+describe('operator controls', () => {
+  it('cancels a queued remediation so it never dispatches', async () => {
+    const h = harness();
+    const r = await h.orchestrator.intake(issue(), 'test');
+    const cancelled = await h.orchestrator.cancel(r.remediation!.id, 'paused for budget');
+
+    expect(cancelled?.state).toBe('cancelled');
+    expect(cancelled?.error).toBe('paused for budget');
+    // The point of cancelling: capacity frees without the work starting.
+    expect(await h.orchestrator.dispatch()).toBe(0);
+  });
+
+  it('leaves an already-terminal remediation alone', async () => {
+    const h = harness();
+    const r = await h.orchestrator.intake(issue(), 'test');
+    h.store.transition(r.remediation!.id, 'succeeded', { prUrl: 'https://x/pull/1' });
+
+    const result = await h.orchestrator.cancel(r.remediation!.id);
+    expect(result?.state).toBe('succeeded');
+  });
+
+  /**
+   * `blocked` is the only non-terminal state the system cannot leave on its
+   * own; without a reply path a session sits there until it times out.
+   */
+  it('returns a blocked remediation to running when answered', async () => {
+    const h = harness(new DevinMockClient({ pollsUntilTerminal: 1, forceOutcome: 'blocked' }));
+    await h.orchestrator.intake(issue(), 'test');
+    await h.orchestrator.dispatch();
+    await h.orchestrator.reconcile();
+    await h.orchestrator.reconcile();
+
+    const blocked = h.store.listAll()[0]!;
+    expect(blocked.state).toBe('blocked');
+
+    const replied = await h.orchestrator.reply(blocked.id, 'yes, keep it backwards compatible');
+    expect(replied?.state).toBe('running');
+    expect(h.store.listEvents().some((e) => e.type === 'remediation.reply')).toBe(true);
+  });
+
+  it('refuses an unknown remediation', async () => {
+    const h = harness();
+    expect(await h.orchestrator.reply(9999, 'hello')).toBeNull();
+    expect(await h.orchestrator.cancel(9999)).toBeNull();
+  });
+});

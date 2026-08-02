@@ -289,6 +289,37 @@ export class Orchestrator {
     return updated;
   }
 
+  /**
+   * Answer a blocked session and put it back to work.
+   *
+   * `blocked` is the one non-terminal state the system cannot leave on its
+   * own, so without this the only way to rescue a session was to open the
+   * Devin UI or hand-roll an API call — and the remediation would sit in
+   * `blocked` until it timed out, quietly counting against cycle time.
+   *
+   * The reply is recorded as an event, so the audit log shows who unblocked
+   * what and with what answer.
+   */
+  async reply(id: number, message: string): Promise<Remediation | null> {
+    const r = this.store.get(id);
+    if (!r || !r.devinSessionId) return null;
+    if (isTerminal(r.state)) return r;
+
+    await this.devin.sendMessage(r.devinSessionId, message);
+
+    this.store.appendEvent({
+      remediationId: r.id,
+      issueNumber: r.issueNumber,
+      type: 'remediation.reply',
+      detail: { message },
+    });
+
+    // Optimistically back to running; the next reconcile confirms from Devin.
+    const updated = r.state === 'blocked' ? this.store.transition(r.id, 'running', {}, { reply: true }) : r;
+    logger.info({ remediation: id, issue: r.issueNumber }, 'replied to session');
+    return updated;
+  }
+
   // -------------------------------------------------------------------------
   // Reconcile
   // -------------------------------------------------------------------------

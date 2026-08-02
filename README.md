@@ -322,6 +322,14 @@ small and the trust boundary easy to describe in review.
 issue and waits. `timed_out` is enforced by the reconciler. Transport errors
 requeue; 4xx errors terminate. A finished-but-no-PR session fails loudly.
 
+**Blocked is the one state with no way out.** Every other non-terminal state
+advances on its own; `blocked` is waiting on a human by definition, so without
+an answer it just sits there until the timeout fires and charges the delay to
+cycle time. `POST …/reply` is that path back — it sends the answer to the
+session, records it as an event so the audit log shows who unblocked what, and
+optimistically returns the remediation to `running` for the next reconcile to
+confirm.
+
 **Zero native dependencies.** Persistence uses Node 24's built-in `node:sqlite`,
 so there's no `node-gyp` in the build and no compiler in the runtime image.
 
@@ -351,23 +359,34 @@ Full list in [`.env.example`](.env.example).
 | `POST` | `/api/trigger` | manual trigger — `{"issueNumber": 1}` |
 | `POST` | `/api/scan` | force a scheduled sweep |
 | `POST` | `/api/tick` | force a reconcile pass |
+| `POST` | `/api/remediations/:id/reply` | answer a blocked session — `{"message": "…"}` |
+| `POST` | `/api/remediations/:id/cancel` | stop one remediation — `{"reason": "…"}` |
 | `GET` | `/api/analytics` \| `/api/remediations` \| `/api/events` | reporting |
 | `GET` | `/healthz` \| `/metrics` | ops |
 
 Operators can also comment `/autopilot retry` on an issue.
 
+```bash
+# Devin blocked on remediation 1 (the id from /api/remediations, not the issue
+# number); answer it without leaving the terminal.
+curl -X POST localhost:8080/api/remediations/1/reply \
+  -H 'content-type: application/json' \
+  -d '{"message": "yes, keep it backwards compatible"}'
+```
+
 ## Tests
 
 ```bash
-npm test         # 88 tests
+npm test         # 97 tests
 npm run typecheck
 ```
 
 Covering contract parsing and its **refusal** paths, HMAC verification including
 malformed input, delivery idempotency, the concurrency cap, the full
 intake → dispatch → reconcile lifecycle across every terminal state, the
-finished-without-PR judgement, and analytics arithmetic (including that success
-rate is computed over completed work only).
+finished-without-PR judgement, the operator controls (cancel frees capacity
+before dispatch; a reply returns a blocked session to `running`), and analytics
+arithmetic (including that success rate is computed over completed work only).
 
 ## Extending this
 
