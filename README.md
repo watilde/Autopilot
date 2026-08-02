@@ -359,7 +359,7 @@ Operators can also comment `/autopilot retry` on an issue.
 ## Tests
 
 ```bash
-npm test         # 74 tests
+npm test         # 88 tests
 npm run typecheck
 ```
 

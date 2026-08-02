@@ -58,50 +58,55 @@ function build(env: NodeJS.ProcessEnv = process.env): Config {
     const detail = parsed.error.issues.map((i) => `  ${i.path.join('.')}: ${i.message}`).join('\n');
     throw new Error(`Invalid configuration:\n${detail}`);
   }
-  const cfg = parsed.data;
-
-  // Cross-field rules. These are the settings that make the difference between
-  // "works on my laptop" and "safe to point at a real repository".
-  const errors: string[] = [];
-  if (cfg.DEVIN_MODE === 'live' && !cfg.DEVIN_API_KEY) {
-    errors.push('DEVIN_API_KEY is required when DEVIN_MODE=live');
-  }
-  // Caught here rather than at the first API call, so a misconfigured deploy
-  // fails at boot instead of silently 403-ing an hour later.
-  const version = cfg.DEVIN_API_VERSION ?? (cfg.DEVIN_API_KEY?.startsWith('cog_') ? 'v3' : 'v1');
-  if (cfg.DEVIN_MODE === 'live' && version === 'v3' && !cfg.DEVIN_ORG_ID) {
-    errors.push(
-      'DEVIN_ORG_ID is required for the v3 API (your key starts with "cog_"). ' +
-        'Find it under Settings → Service Users.',
-    );
-  }
-  if (cfg.DEVIN_MODE === 'live' && !cfg.GITHUB_TOKEN) {
-    errors.push('GITHUB_TOKEN is required when DEVIN_MODE=live (needed to read issues)');
-  }
-  if (errors.length) {
-    throw new Error(`Invalid configuration:\n${errors.map((e) => `  ${e}`).join('\n')}`);
-  }
-  return cfg;
+  return parsed.data;
 }
 
 export const config = build();
 
+/** Which Devin API generation a config implies. Exported for tests. */
+export function resolveApiVersion(cfg: Config = config): 'v1' | 'v3' {
+  return cfg.DEVIN_API_VERSION ?? (cfg.DEVIN_API_KEY?.startsWith('cog_') ? 'v3' : 'v1');
+}
+
 /**
- * Checks that only apply when we are actually listening for webhooks.
+ * Everything required to actually *run the service*, as opposed to parse a
+ * config. The split matters: `npm run report` and `npm run seed` import this
+ * module but never serve a request or dispatch a session, and failing them for
+ * a missing webhook secret or Devin key would be nonsense — the report is most
+ * useful precisely when the service is down.
  *
- * These live outside build() on purpose: `npm run report` and `npm run seed`
- * import this module but never expose an HTTP endpoint, and failing them for a
- * missing webhook secret would be nonsense. The webhook route enforces the
- * same rule at request time regardless, so nothing is weakened by checking it
- * here instead of at import.
+ * Checked at boot rather than at first use, so a misconfigured deploy fails
+ * immediately instead of 403-ing an hour later. Nothing is weakened by the
+ * move: the webhook route re-checks the secret on every request, and the Devin
+ * factory re-checks its own credentials.
  */
 export function assertServerConfig(cfg: Config = config): void {
+  const errors: string[] = [];
+
   if (!cfg.GITHUB_WEBHOOK_SECRET && !cfg.ALLOW_UNSIGNED_WEBHOOKS) {
-    throw new Error(
-      'Invalid configuration:\n' +
-        '  GITHUB_WEBHOOK_SECRET is required to serve webhooks.\n' +
-        '  Set it, or set ALLOW_UNSIGNED_WEBHOOKS=true for a local demo.',
+    errors.push(
+      'GITHUB_WEBHOOK_SECRET is required to serve webhooks.\n' +
+        '    Set it, or set ALLOW_UNSIGNED_WEBHOOKS=true for a local demo.',
     );
+  }
+
+  if (cfg.DEVIN_MODE === 'live') {
+    if (!cfg.DEVIN_API_KEY) {
+      errors.push('DEVIN_API_KEY is required when DEVIN_MODE=live.');
+    }
+    if (!cfg.GITHUB_TOKEN) {
+      errors.push('GITHUB_TOKEN is required when DEVIN_MODE=live (needed to read issues).');
+    }
+    if (cfg.DEVIN_API_KEY && resolveApiVersion(cfg) === 'v3' && !cfg.DEVIN_ORG_ID) {
+      errors.push(
+        'DEVIN_ORG_ID is required for the v3 API (your key starts with "cog_").\n' +
+          '    Find the organization id (org-…) under Settings → Service Users.',
+      );
+    }
+  }
+
+  if (errors.length) {
+    throw new Error(`Invalid configuration:\n${errors.map((e) => `  - ${e}`).join('\n')}`);
   }
 }
 
