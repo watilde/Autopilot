@@ -202,18 +202,18 @@ export class Orchestrator {
         title: sessionTitle(contract, r.issueNumber),
         tags: sessionTags(contract, r.issueNumber),
         idempotent: true,
-        max_acu_limit: config.DEVIN_MAX_ACU,
-        structured_output_schema: REMEDIATION_OUTPUT_SCHEMA,
+        maxAcuLimit: config.DEVIN_MAX_ACU,
+        structuredOutputSchema: REMEDIATION_OUTPUT_SCHEMA,
       });
 
       this.store.transition(
         r.id,
         'running',
-        { devinSessionId: session.session_id, devinSessionUrl: session.url },
-        { isNewSession: session.is_new_session ?? null },
+        { devinSessionId: session.sessionId, devinSessionUrl: session.url },
+        { isNewSession: session.isNewSession ?? null, apiVersion: this.devin.apiVersion },
       );
 
-      log.info({ session: session.session_id, url: session.url }, 'devin session created');
+      log.info({ session: session.sessionId, url: session.url }, 'devin session created');
       metrics.dispatches.inc({ result: 'started', category: contract.category });
 
       await this.github.comment(
@@ -293,16 +293,18 @@ export class Orchestrator {
       return;
     }
 
+    // Normalised by the client, so this switch is identical for v1 and v3.
     const session = await this.devin.getSession(r.devinSessionId!);
-    const statusEnum = (session.status_enum ?? session.status ?? '').toString();
-    const prUrl = session.pull_request?.url ?? null;
-    const output = (session.structured_output ?? null) as Record<string, unknown> | null;
-    const acu = typeof session.acu_used === 'number' ? session.acu_used : undefined;
+    const acu = session.acuUsed ?? undefined;
+    const output = session.structuredOutput;
 
-    switch (statusEnum) {
+    switch (session.state) {
       case 'finished': {
-        const verdict = this.judge(output, prUrl);
-        log.info({ verdict: verdict.state, prUrl }, 'session finished');
+        const verdict = this.judge(output, session.pullRequestUrl);
+        log.info(
+          { verdict: verdict.state, prUrl: session.pullRequestUrl, status: session.rawStatus },
+          'session finished',
+        );
         await this.finish(r, verdict.state, {
           prUrl: verdict.prUrl ?? undefined,
           structuredOutput: output,
@@ -312,10 +314,10 @@ export class Orchestrator {
         return;
       }
 
-      case 'expired':
-        log.warn('session expired');
+      case 'failed':
+        log.warn({ status: session.rawStatus }, 'session ended without completing');
         await this.finish(r, 'failed', {
-          error: 'Devin session expired before completing',
+          error: `Devin session ended: ${session.rawStatus || 'unknown status'}`,
           structuredOutput: output,
           acuUsed: acu,
         });
@@ -323,8 +325,8 @@ export class Orchestrator {
 
       case 'blocked': {
         if (r.state !== 'blocked') {
-          const question = this.lastMessage(session);
-          this.store.transition(r.id, 'blocked', { acuUsed: acu }, { question });
+          const question = session.lastMessage;
+          this.store.transition(r.id, 'blocked', { acuUsed: acu }, { question, status: session.rawStatus });
           log.info('session blocked, awaiting human input');
           await this.github.comment(
             r.issueNumber,
@@ -340,10 +342,10 @@ export class Orchestrator {
         return;
       }
 
+      case 'running':
       default: {
-        // working / resumed / suspend_requested / ... — still in progress.
         if (r.state !== 'running') {
-          this.store.transition(r.id, 'running', { acuUsed: acu }, { statusEnum });
+          this.store.transition(r.id, 'running', { acuUsed: acu }, { status: session.rawStatus });
         }
         return;
       }
@@ -448,15 +450,6 @@ export class Orchestrator {
     if (r.error) lines.push(`**Failure reason:** ${r.error}`);
 
     return lines.join('\n');
-  }
-
-  private lastMessage(session: { messages?: Array<{ message?: string }> }): string {
-    const msgs = session.messages ?? [];
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const m = msgs[i]?.message;
-      if (typeof m === 'string' && m.trim()) return m.trim();
-    }
-    return '';
   }
 
   // -------------------------------------------------------------------------

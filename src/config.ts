@@ -33,7 +33,12 @@ const schema = z.object({
 
   DEVIN_MODE: z.enum(['live', 'mock']).default('mock'),
   DEVIN_API_KEY: z.string().optional(),
-  DEVIN_API_BASE_URL: z.string().url().default('https://api.devin.ai/v1'),
+  /** Host only — the client appends /v1 or /v3 based on the credential. */
+  DEVIN_API_BASE_URL: z.string().url().default('https://api.devin.ai'),
+  /** Normally inferred from the key prefix; set only to override. */
+  DEVIN_API_VERSION: z.enum(['v1', 'v3']).optional(),
+  /** Required for v3 (`cog_` keys): Settings → Service Users. */
+  DEVIN_ORG_ID: z.string().optional(),
   DEVIN_MAX_ACU: int(10),
 
   AUTOPILOT_LABEL: z.string().default('autopilot'),
@@ -60,6 +65,15 @@ function build(env: NodeJS.ProcessEnv = process.env): Config {
   const errors: string[] = [];
   if (cfg.DEVIN_MODE === 'live' && !cfg.DEVIN_API_KEY) {
     errors.push('DEVIN_API_KEY is required when DEVIN_MODE=live');
+  }
+  // Caught here rather than at the first API call, so a misconfigured deploy
+  // fails at boot instead of silently 403-ing an hour later.
+  const version = cfg.DEVIN_API_VERSION ?? (cfg.DEVIN_API_KEY?.startsWith('cog_') ? 'v3' : 'v1');
+  if (cfg.DEVIN_MODE === 'live' && version === 'v3' && !cfg.DEVIN_ORG_ID) {
+    errors.push(
+      'DEVIN_ORG_ID is required for the v3 API (your key starts with "cog_"). ' +
+        'Find it under Settings → Service Users.',
+    );
   }
   if (cfg.DEVIN_MODE === 'live' && !cfg.GITHUB_TOKEN) {
     errors.push('GITHUB_TOKEN is required when DEVIN_MODE=live (needed to read issues)');

@@ -1,8 +1,8 @@
 import type {
   CreateSessionInput,
-  CreateSessionResponse,
+  CreateSessionResult,
   DevinClient,
-  SessionDetail,
+  NormalizedSession,
 } from './types.js';
 
 /**
@@ -12,10 +12,10 @@ import type {
  * can be exercised in CI and in a reviewer's terminal without an API key and
  * without spending ACUs. It is not a toy: it reproduces the states the
  * orchestrator actually has to handle, including the awkward ones (blocked,
- * expired, a session that finishes without opening a PR).
+ * expired, and a session that finishes without opening a PR).
  *
- * Outcomes are derived from a hash of the session tags, so the same issue
- * always produces the same result and demos are repeatable.
+ * Outcomes derive from a hash of the session tags, so the same issue always
+ * produces the same result and demos are repeatable.
  */
 
 function hash(s: string): number {
@@ -33,13 +33,12 @@ interface MockSession {
   id: string;
   input: CreateSessionInput;
   polls: number;
-  createdAt: string;
   outcome: Outcome;
   pollsUntilTerminal: number;
 }
 
 export interface MockOptions {
-  /** Polls spent in `working` before reaching a terminal state. */
+  /** Polls spent running before reaching a terminal state. */
   pollsUntilTerminal?: number;
   /** Force every session to one outcome (used by tests). */
   forceOutcome?: Outcome;
@@ -47,6 +46,7 @@ export interface MockOptions {
 
 export class DevinMockClient implements DevinClient {
   readonly mode = 'mock' as const;
+  readonly apiVersion = 'mock' as const;
   private sessions = new Map<string, MockSession>();
   private counter = 0;
   private readonly opts: MockOptions;
@@ -55,7 +55,7 @@ export class DevinMockClient implements DevinClient {
     this.opts = opts;
   }
 
-  async createSession(input: CreateSessionInput): Promise<CreateSessionResponse> {
+  async createSession(input: CreateSessionInput): Promise<CreateSessionResult> {
     const seed = (input.tags ?? []).join(',') || input.prompt.slice(0, 64);
     const h = hash(seed);
 
@@ -73,79 +73,69 @@ export class DevinMockClient implements DevinClient {
       id,
       input,
       polls: 0,
-      createdAt: new Date().toISOString(),
       outcome,
       pollsUntilTerminal: this.opts.pollsUntilTerminal ?? 2,
     });
 
-    return { session_id: id, url: `https://app.devin.ai/sessions/${id}`, is_new_session: true };
+    return { sessionId: id, url: `https://app.devin.ai/sessions/${id}`, isNewSession: true };
   }
 
-  async getSession(sessionId: string): Promise<SessionDetail> {
+  async getSession(sessionId: string): Promise<NormalizedSession> {
     const s = this.sessions.get(sessionId);
     if (!s) throw new Error(`mock session ${sessionId} not found`);
     s.polls++;
 
-    const base: SessionDetail = {
-      session_id: s.id,
-      status: 'running',
-      status_enum: 'working',
-      title: s.input.title ?? 'Mock remediation',
-      created_at: s.createdAt,
-      updated_at: new Date().toISOString(),
-      tags: s.input.tags ?? [],
-      acu_used: Number((s.polls * 0.4).toFixed(2)),
-      messages: [{ type: 'devin_message', message: `working (poll ${s.polls})` }],
+    const base: NormalizedSession = {
+      sessionId: s.id,
+      url: `https://app.devin.ai/sessions/${s.id}`,
+      state: 'running',
+      rawStatus: 'running/working',
+      structuredOutput: null,
+      pullRequestUrl: null,
+      acuUsed: Number((s.polls * 0.4).toFixed(2)),
+      lastMessage: `working (poll ${s.polls})`,
     };
 
     if (s.polls <= s.pollsUntilTerminal) return base;
 
     const contractId = (s.input.tags ?? []).find((t) => t.startsWith('contract:'))?.split(':')[1];
-    const branch = `autopilot/${(contractId ?? 'fix').toLowerCase()}`;
+    const prUrl = `https://github.com/watilde/superset/pull/${900 + this.counter}`;
 
     switch (s.outcome) {
       case 'fixed':
         return {
           ...base,
-          status: 'finished',
-          status_enum: 'finished',
-          pull_request: { url: `https://github.com/watilde/superset/pull/${900 + this.counter}` },
-          structured_output: {
+          state: 'finished',
+          rawStatus: 'exit/finished',
+          pullRequestUrl: prUrl,
+          structuredOutput: {
             status: 'fixed',
             summary: `Applied the remediation described in ${contractId ?? 'the issue'} and verified it locally.`,
             files_changed: [`superset/example_${this.counter}.py`],
             verification_passed: true,
             verification_output: 'all verification commands exited 0',
-            pull_request_url: `https://github.com/watilde/superset/pull/${900 + this.counter}`,
+            pull_request_url: prUrl,
             confidence: 'high',
-            branch,
           },
         };
 
       case 'blocked':
         return {
           ...base,
-          status: 'blocked',
-          status_enum: 'blocked',
-          messages: [
-            ...(base.messages ?? []),
-            {
-              type: 'devin_message',
-              message:
-                'The fix touches a public interface. Please confirm whether backwards compatibility is required.',
-            },
-          ],
+          state: 'blocked',
+          rawStatus: 'running/waiting_for_user',
+          lastMessage:
+            'The fix touches a public interface. Please confirm whether backwards compatibility is required.',
         };
 
       case 'finished_no_pr':
-        // The genuinely awkward case: Devin finished but produced no PR. The
-        // orchestrator must treat this as a failure, not a success.
+        // The genuinely awkward case: Devin finished but produced no PR.
         return {
           ...base,
-          status: 'finished',
-          status_enum: 'finished',
-          pull_request: null,
-          structured_output: {
+          state: 'finished',
+          rawStatus: 'exit/finished',
+          pullRequestUrl: null,
+          structuredOutput: {
             status: 'no_change_needed',
             summary: 'Investigated the report and concluded the current behaviour is correct.',
             files_changed: [],
@@ -158,7 +148,10 @@ export class DevinMockClient implements DevinClient {
 
       case 'expired':
       default:
-        return { ...base, status: 'expired', status_enum: 'expired' };
+        // Must be a status that normalizeV3 genuinely maps to `failed` —
+        // `exit/inactivity` would normalise to `finished`, so using it here
+        // would make the mock disagree with the real API.
+        return { ...base, state: 'failed', rawStatus: 'exit/error' };
     }
   }
 

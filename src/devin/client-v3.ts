@@ -1,0 +1,171 @@
+import { logger } from '../logger.js';
+import { DevinHttp, type DevinHttpOptions } from './http.js';
+import type {
+  CreateSessionInput,
+  CreateSessionResult,
+  DevinClient,
+  DevinSessionState,
+  NormalizedSession,
+} from './types.js';
+
+interface V3SessionResponse {
+  session_id: string;
+  url?: string | null;
+  status?: string;
+  status_detail?: string | null;
+  structured_output?: Record<string, unknown> | null;
+  pull_requests?: Array<{ pr_url?: string | null; pr_state?: string | null }> | null;
+  acus_consumed?: number | null;
+}
+
+interface V3MessagesResponse {
+  messages?: Array<{ message?: string | null; content?: string | null; type?: string | null }>;
+  data?: Array<{ message?: string | null; content?: string | null; type?: string | null }>;
+}
+
+/**
+ * Terminal `status_detail` values that mean the session stopped for a reason
+ * that is not "it did the work" — quota, billing and hard errors. These become
+ * failures regardless of anything the session may have produced.
+ */
+const FATAL_DETAIL = new Set([
+  'error',
+  'usage_limit_exceeded',
+  'out_of_credits',
+  'out_of_quota',
+  'no_quota_allocation',
+  'payment_declined',
+  'org_usage_limit_exceeded',
+  'user_usage_limit_exceeded',
+  'total_session_limit_exceeded',
+]);
+
+/** Session is stopped and waiting on a human. */
+const WAITING_DETAIL = new Set(['waiting_for_user', 'waiting_for_approval']);
+
+export interface DevinV3ClientOptions extends DevinHttpOptions {
+  /** Organization id, `org-…`, from Settings → Service Users. */
+  orgId: string;
+}
+
+/**
+ * Client for the current v3 API (`cog_*` service-user credentials).
+ *
+ * Two things differ enough from v1 to be worth calling out: the org id is part
+ * of every path, and lifecycle is split across `status` and `status_detail` —
+ * so "did it finish successfully" needs both fields, not one.
+ */
+export class DevinV3Client implements DevinClient {
+  readonly mode = 'live' as const;
+  readonly apiVersion = 'v3' as const;
+  private readonly http: DevinHttp;
+  private readonly orgId: string;
+
+  constructor(opts: DevinV3ClientOptions) {
+    this.http = new DevinHttp(opts);
+    this.orgId = opts.orgId;
+  }
+
+  private base(): string {
+    return `/organizations/${encodeURIComponent(this.orgId)}/sessions`;
+  }
+
+  async createSession(input: CreateSessionInput): Promise<CreateSessionResult> {
+    // v3 has no `idempotent` flag — the store's in-flight guard is the only
+    // thing preventing duplicate sessions here, which is why that guard is
+    // tested rather than assumed.
+    const res = await this.http.request<V3SessionResponse>('POST', this.base(), {
+      prompt: input.prompt,
+      title: input.title,
+      tags: input.tags,
+      max_acu_limit: input.maxAcuLimit,
+      structured_output_schema: input.structuredOutputSchema,
+      structured_output_required: Boolean(input.structuredOutputSchema),
+    });
+    return {
+      sessionId: res.session_id,
+      url: res.url ?? `https://app.devin.ai/sessions/${res.session_id}`,
+      isNewSession: true,
+    };
+  }
+
+  async getSession(sessionId: string): Promise<NormalizedSession> {
+    const s = await this.http.request<V3SessionResponse>(
+      'GET',
+      `${this.base()}/${encodeURIComponent(sessionId)}`,
+    );
+    const normalized = normalizeV3(s);
+
+    // v3 does not inline messages, so fetch the blocking question only when we
+    // actually need it — one extra call per blocked session, not per poll.
+    if (normalized.state === 'blocked' && !normalized.lastMessage) {
+      normalized.lastMessage = await this.lastMessage(sessionId);
+    }
+    return normalized;
+  }
+
+  private async lastMessage(sessionId: string): Promise<string | null> {
+    try {
+      const res = await this.http.request<V3MessagesResponse>(
+        'GET',
+        `${this.base()}/${encodeURIComponent(sessionId)}/messages`,
+      );
+      const list = res.messages ?? res.data ?? [];
+      for (let i = list.length - 1; i >= 0; i--) {
+        const m = list[i];
+        const text = m?.message ?? m?.content;
+        if (typeof text === 'string' && text.trim()) return text.trim();
+      }
+    } catch (err) {
+      // Purely for the status comment — never let it break reconciliation.
+      logger.debug({ sessionId, err: (err as Error).message }, 'could not fetch session messages');
+    }
+    return null;
+  }
+
+  async sendMessage(sessionId: string, message: string): Promise<void> {
+    await this.http.request('POST', `${this.base()}/${encodeURIComponent(sessionId)}/messages`, {
+      message,
+    });
+  }
+
+  async terminateSession(sessionId: string): Promise<void> {
+    await this.http.request('DELETE', `${this.base()}/${encodeURIComponent(sessionId)}`);
+  }
+}
+
+export function normalizeV3(s: V3SessionResponse): NormalizedSession {
+  const status = String(s.status ?? '');
+  const detail = String(s.status_detail ?? '');
+
+  let state: DevinSessionState;
+  if (status === 'error' || FATAL_DETAIL.has(detail)) {
+    state = 'failed';
+  } else if (WAITING_DETAIL.has(detail) || status === 'suspended') {
+    // A suspended session will not progress on its own, so surface it as
+    // blocked rather than letting it masquerade as running until timeout.
+    state = 'blocked';
+  } else if (status === 'exit') {
+    // `inactivity` and `user_request` still count as finished: the session may
+    // well have opened a PR before stopping, and judge() decides on evidence.
+    state = 'finished';
+  } else {
+    // new / claimed / running / resuming
+    state = 'running';
+  }
+
+  const pr = (s.pull_requests ?? []).find(
+    (p) => typeof p?.pr_url === 'string' && p.pr_url.trim(),
+  )?.pr_url;
+
+  return {
+    sessionId: s.session_id,
+    url: s.url ?? null,
+    state,
+    rawStatus: detail ? `${status}/${detail}` : status,
+    structuredOutput: s.structured_output ?? null,
+    pullRequestUrl: pr ?? null,
+    acuUsed: typeof s.acus_consumed === 'number' ? s.acus_consumed : null,
+    lastMessage: null,
+  };
+}

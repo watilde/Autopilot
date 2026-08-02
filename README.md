@@ -57,14 +57,14 @@ something you could actually run against a real codebase:
   Scheduled scan  ──┤        └──────┬───────┘
   every 60s         │               │ queued
                     │               ▼
-  POST /api/trigger ┘        ┌──────────────┐   POST /v1/sessions
+  POST /api/trigger ┘        ┌──────────────┐   POST …/sessions
                              │  dispatch()  │ ──────────────────────►  Devin
-                             └──────┬───────┘   prompt + JSON schema     │
+                             └──────┬───────┘   prompt + JSON schema   v1 or v3
                                     │ running                            │
                                     ▼                                    │
-                             ┌──────────────┐   GET /v1/sessions/{id}    │
+                             ┌──────────────┐   GET …/sessions/{id}      │
                              │ reconcile()  │ ◄──────────────────────────┘
-                             └──────┬───────┘   every 15s
+                             └──────┬───────┘   every 15s, normalised
                                     │
                      ┌──────────────┼──────────────┐
                      ▼              ▼              ▼
@@ -145,11 +145,31 @@ npm run report       # terminal summary
 ```bash
 # .env
 DEVIN_MODE=live
-DEVIN_API_KEY=apk_user_...        # or a service key
+DEVIN_API_KEY=cog_...             # or a legacy apk_ key
+DEVIN_ORG_ID=org-...              # required for cog_ keys; see below
 GITHUB_TOKEN=ghp_...              # `repo` scope: read issues, post comments
 GITHUB_WEBHOOK_SECRET=...         # shared secret from the GitHub webhook
 ALLOW_UNSIGNED_WEBHOOKS=false
 ```
+
+**Both Devin API generations are supported, and the right one is inferred from
+your credential:**
+
+| Key prefix | API | Notes |
+|---|---|---|
+| `cog_…` | **v3** (current) | Service-user credential. Every path is org-scoped, so `DEVIN_ORG_ID` is required — find it under *Settings → Service Users*. |
+| `apk_…` / `apk_user_…` | v1 (deprecated) | No org id needed. |
+
+Getting this wrong fails with a bare `403 Unauthorized` and no explanation, so
+Autopilot infers the generation from the key prefix, logs which one it chose,
+and refuses to boot with an actionable message if a `cog_` key is missing its
+org id. Override with `DEVIN_API_VERSION` if you ever need to.
+
+The two generations disagree about nearly everything the orchestrator cares
+about — v1 has `status_enum`, one `pull_request` and no cost field; v3 splits
+lifecycle across `status` + `status_detail`, returns a `pull_requests` array and
+reports `acus_consumed`. Each client normalises into one internal shape, so the
+state machine never learns either dialect.
 
 Point a GitHub webhook at `https://<host>/webhooks/github` — content type
 `application/json`, events **Issues** and **Issue comments** — then label an
@@ -339,7 +359,7 @@ Operators can also comment `/autopilot retry` on an issue.
 ## Tests
 
 ```bash
-npm test         # 42 tests
+npm test         # 74 tests
 npm run typecheck
 ```
 
@@ -373,7 +393,9 @@ src/
     orchestrator.ts  intake / dispatch / reconcile
     scanner.ts       periodic sweep
   devin/
-    client.ts        v1 API client, retry + backoff
+    client-v1.ts     deprecated v1 API (apk_ keys)
+    client-v3.ts     current v3 API (cog_ keys, org-scoped)
+    http.ts          shared transport: retry, jittered backoff
     mock.ts          deterministic simulator
   github/
     webhook.ts       HMAC verification

@@ -141,7 +141,7 @@ describe('reconcile', () => {
     expect(r.prUrl).toBeNull();
   });
 
-  it('marks an expired session as failed', async () => {
+  it('marks a session that ended in error as failed', async () => {
     const h = harness(new DevinMockClient({ pollsUntilTerminal: 1, forceOutcome: 'expired' }));
     await h.orchestrator.intake(issue(), 'test');
     await h.orchestrator.dispatch();
@@ -150,7 +150,9 @@ describe('reconcile', () => {
 
     const r = h.store.listAll()[0]!;
     expect(r.state).toBe('failed');
-    expect(r.error).toMatch(/expired/);
+    // The provider status is preserved in the error so triage does not need
+    // to go back to the Devin UI to find out why.
+    expect(r.error).toMatch(/exit\/error/);
   });
 
   it('surfaces a blocked session without terminating it', async () => {
