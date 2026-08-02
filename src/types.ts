@@ -30,6 +30,20 @@ export type Category = 'security' | 'dependency' | 'code-quality' | 'reliability
 export type Severity = 'critical' | 'high' | 'medium' | 'low';
 
 /**
+ * What happened to the pull request after Devin opened it.
+ *
+ * Tracked separately from the remediation state because they answer different
+ * questions. `succeeded` means the agent did its job; `merged` means the
+ * organisation accepted the result. Only the second one is value delivered,
+ * and a system that reports the first as if it were the second is flattering
+ * itself.
+ */
+export type PullRequestState = 'open' | 'merged' | 'closed';
+
+/** Verdict from the PR's own CI, which is the check Autopilot does not control. */
+export type CiStatus = 'pending' | 'passed' | 'failed';
+
+/**
  * The machine-readable half of a GitHub issue. Authors write this as a fenced
  * ```autopilot block in the issue body; Autopilot refuses to dispatch without
  * one. It is the contract between "a human described a problem" and "an agent
@@ -66,6 +80,15 @@ export interface Remediation {
   devinSessionId: string | null;
   devinSessionUrl: string | null;
   prUrl: string | null;
+  prState: PullRequestState | null;
+  /** When the PR first appeared — the numerator of time-to-fix. */
+  prOpenedAt: string | null;
+  prMergedAt: string | null;
+  ciStatus: CiStatus | null;
+  /** Which run produced `ciStatus`, so a second failure is not mistaken for the first. */
+  ciRunId: number | null;
+  /** How many times CI sent this back to Devin for a self-correction. */
+  reworks: number;
   structuredOutput: unknown | null;
   attempt: number;
   error: string | null;

@@ -1,6 +1,7 @@
 import { Octokit } from '@octokit/rest';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
+import type { PullRequestState } from '../types.js';
 
 /**
  * Everything Autopilot needs from GitHub, and nothing else.
@@ -18,6 +19,27 @@ export interface IssueRef {
   htmlUrl: string;
   labels: string[];
   state: string;
+}
+
+export interface PullRequestSnapshot {
+  number: number;
+  url: string;
+  state: PullRequestState;
+  mergedAt: string | null;
+  headRef: string;
+  headSha: string;
+}
+
+/**
+ * Pull the PR number out of a `.../pull/123` URL.
+ *
+ * Devin reports the pull request it opened as a URL, and GitHub's API wants a
+ * number, so this conversion sits between "what the agent told us" and every
+ * subsequent question we ask about that PR.
+ */
+export function parsePullRequestNumber(url: string | null): number | null {
+  const m = /\/pull\/(\d+)(?:[/?#]|$)/.exec(url ?? '');
+  return m ? Number(m[1]) : null;
 }
 
 export class GitHubClient {
@@ -112,6 +134,143 @@ export class GitHubClient {
       });
     } catch (err) {
       logger.warn({ issueNumber, err: (err as Error).message }, 'failed to add labels');
+    }
+  }
+
+  /**
+   * Current state of a pull request.
+   *
+   * "Devin opened a PR" and "the fix shipped" are different claims, and only
+   * GitHub can settle the second one. Merge rate is the metric an engineering
+   * leader actually cares about, so it has to come from here rather than from
+   * anything the agent reported about itself.
+   */
+  async getPullRequest(number: number): Promise<PullRequestSnapshot | null> {
+    if (!this.octokit) return null;
+    try {
+      const { data } = await this.octokit.pulls.get({
+        owner: this.owner,
+        repo: this.repo,
+        pull_number: number,
+      });
+      return {
+        number: data.number,
+        url: data.html_url,
+        state: data.merged_at ? 'merged' : (data.state as 'open' | 'closed'),
+        mergedAt: data.merged_at ?? null,
+        headRef: data.head.ref,
+        headSha: data.head.sha,
+      };
+    } catch (err) {
+      logger.warn({ number, err: (err as Error).message }, 'failed to fetch pull request');
+      return null;
+    }
+  }
+
+  /** The open PR for a branch, if Devin opened one and we lost track of the URL. */
+  async findPullRequestForBranch(branch: string): Promise<PullRequestSnapshot | null> {
+    if (!this.octokit) return null;
+    try {
+      const { data } = await this.octokit.pulls.list({
+        owner: this.owner,
+        repo: this.repo,
+        head: `${this.owner}:${branch}`,
+        state: 'all',
+        per_page: 1,
+        sort: 'created',
+        direction: 'desc',
+      });
+      const pr = data[0];
+      if (!pr) return null;
+      return {
+        number: pr.number,
+        url: pr.html_url,
+        state: pr.merged_at ? 'merged' : (pr.state as 'open' | 'closed'),
+        mergedAt: pr.merged_at ?? null,
+        headRef: pr.head.ref,
+        headSha: pr.head.sha,
+      };
+    } catch (err) {
+      logger.warn({ branch, err: (err as Error).message }, 'failed to look up pull request');
+      return null;
+    }
+  }
+
+  /**
+   * The most recent completed workflow run for a branch.
+   *
+   * The webhook tells us this faster, but only when one is configured and
+   * reachable. Polling is what makes the review-fix loop work on a laptop
+   * behind NAT, and — as with merge state — a webhook that was never delivered
+   * is indistinguishable from a build that passed, which is not a thing to
+   * guess about.
+   */
+  async latestWorkflowRun(branch: string): Promise<{
+    id: number;
+    conclusion: string | null;
+    status: string;
+    htmlUrl: string;
+    headSha: string;
+  } | null> {
+    if (!this.octokit) return null;
+    try {
+      const { data } = await this.octokit.actions.listWorkflowRunsForRepo({
+        owner: this.owner,
+        repo: this.repo,
+        branch,
+        per_page: 1,
+      });
+      const run = data.workflow_runs[0];
+      if (!run) return null;
+      return {
+        id: run.id,
+        conclusion: run.conclusion ?? null,
+        status: run.status ?? 'unknown',
+        htmlUrl: run.html_url,
+        headSha: run.head_sha,
+      };
+    } catch (err) {
+      logger.warn({ branch, err: (err as Error).message }, 'failed to list workflow runs');
+      return null;
+    }
+  }
+
+  /**
+   * The tail of the logs from the failed jobs in a workflow run.
+   *
+   * This is what makes a review-fix loop possible: to correct itself, Devin
+   * needs the actual failure text, not "CI failed". The tail is taken rather
+   * than the head because a build log is mostly setup noise and the part that
+   * explains the failure is at the end — and because whatever is sent lands in
+   * the session's context window, which is not free.
+   */
+  async failureLog(runId: number, maxChars = 6000): Promise<string | null> {
+    if (!this.octokit) return null;
+    try {
+      const { data: jobs } = await this.octokit.actions.listJobsForWorkflowRun({
+        owner: this.owner,
+        repo: this.repo,
+        run_id: runId,
+        filter: 'latest',
+      });
+
+      const failed = jobs.jobs.filter((j) => j.conclusion === 'failure');
+      if (!failed.length) return null;
+
+      const chunks: string[] = [];
+      for (const job of failed.slice(0, 2)) {
+        const res = await this.octokit.actions.downloadJobLogsForWorkflowRun({
+          owner: this.owner,
+          repo: this.repo,
+          job_id: job.id,
+        });
+        const text = typeof res.data === 'string' ? res.data : Buffer.from(res.data as ArrayBuffer).toString('utf8');
+        chunks.push(`--- job: ${job.name} ---\n${text.slice(-maxChars)}`);
+      }
+      return chunks.join('\n\n').slice(-maxChars * 2);
+    } catch (err) {
+      logger.warn({ runId, err: (err as Error).message }, 'failed to download workflow logs');
+      return null;
     }
   }
 

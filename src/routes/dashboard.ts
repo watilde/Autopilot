@@ -4,10 +4,10 @@ import { config } from '../config.js';
 /**
  * The dashboard is the answer to "how would I know this is working?".
  *
- * It leads with outcomes (pull requests opened, success rate over completed
- * work, median and p90 cycle time, cost per PR) rather than activity, because
- * activity is the metric that lies. Everything is fetched from /api/analytics,
- * so nothing shown here is computed twice.
+ * It leads with outcomes — merged pull requests, merge rate, time to PR, cost
+ * per merged PR — rather than activity, because activity is the metric that
+ * lies. "Sessions started" can go up while nothing ships. Everything is fetched
+ * from /api/analytics, so nothing shown here is computed twice.
  *
  * Charts follow the house data-viz rules: single-hue bars for magnitude,
  * reserved status colors for state (never reused as a series), no pie charts,
@@ -193,10 +193,24 @@ const PAGE = String.raw`<!doctype html>
   <div class="card scroll"><table id="table">
     <thead><tr>
       <th>Issue</th><th>Contract</th><th>State</th><th>Cycle</th>
-      <th>Session</th><th>Pull request</th>
+      <th>Session</th><th>Pull request</th><th>CI</th>
     </tr></thead>
     <tbody></tbody>
   </table></div>
+
+  <h2>As reported by Devin</h2>
+  <div class="card scroll">
+    <p class="bar-val" style="text-align:left;margin:0 0 10px;color:var(--muted)">
+      Pulled from Devin's own session analytics — the independent view of the same work.
+      Tags are what the orchestrator actually sent.
+    </p>
+    <table id="devin">
+      <thead><tr>
+        <th>Session</th><th>Status</th><th>Tags</th><th class="num">ACU</th><th>Pull request</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
 
   <h2>Why things failed</h2>
   <div class="card"><div class="bars" id="fails"></div></div>
@@ -237,12 +251,15 @@ async function refresh() {
   // Outcome-shaped KPIs. Success rate is over *completed* work so that
   // in-flight items cannot inflate it.
   document.getElementById("kpis").innerHTML = [
-    kpi("Pull requests opened", t.prsOpened, "merge-ready output"),
-    kpi("Success rate", pct(a.successRate), t.completed + " completed"),
-    kpi("Median cycle time", dur(a.cycleTimeSeconds.p50), "p90 " + dur(a.cycleTimeSeconds.p90)),
-    kpi("In flight", t.active, "cap " + (t.active > 0 ? "engaged" : "idle")),
-    kpi("ACU per PR", a.acu.perPr ? a.acu.perPr.toFixed(1) : "—", a.acu.total.toFixed(1) + " total"),
-    kpi("False positives", t.falsePositives, "reports correctly rejected"),
+    kpi("Merged", t.prsMerged, t.prsOpened + " pull requests opened"),
+    kpi("Merge rate", pct(a.mergeRate), "of opened PRs accepted"),
+    kpi("Success rate", pct(a.successRate),
+        t.concluded + " concluded, " + t.cancelled + " withdrawn"),
+    kpi("Median time to PR", dur(a.timeToPrSeconds.p50), "p90 " + dur(a.timeToPrSeconds.p90)),
+    kpi("ACU per merged PR", a.acu.perMergedPr ? a.acu.perMergedPr.toFixed(1) : "—",
+        a.acu.reported ? a.acu.total.toFixed(1) + " ACU total" : "provider reported no ACU data"),
+    kpi("Self-corrections", a.ci.reworks,
+        a.ci.failed + " CI failures returned to Devin"),
   ].join("");
 
   document.getElementById("chips").innerHTML = a.byState.length
@@ -300,15 +317,66 @@ async function refresh() {
       '<td>' + (r.devinSessionUrl
         ? '<a href="' + esc(r.devinSessionUrl) + '" target="_blank" rel="noopener">session</a>' : "—") + '</td>' +
       '<td>' + (r.prUrl
-        ? '<a href="' + esc(r.prUrl) + '" target="_blank" rel="noopener">' +
-          esc(r.prUrl.split("/").pop()) + '</a>' : "—") + '</td>' +
+        ? '<a href="' + esc(r.prUrl) + '" target="_blank" rel="noopener">#' +
+          esc(r.prUrl.split("/").pop()) + '</a> ' +
+          '<span style="color:var(--muted)">' + esc(r.prState || "open") + '</span>'
+        : "—") + '</td>' +
+      '<td>' + (r.ciStatus
+        ? (r.ciStatus === "passed" ? "✅" : r.ciStatus === "failed" ? "❌" : "…") + " " + esc(r.ciStatus) +
+          (r.reworks ? ' <span style="color:var(--muted)">' + r.reworks + '× fixed</span>' : "")
+        : "—") + '</td>' +
     '</tr>';
   }).join("");
   document.querySelector("#table tbody").innerHTML =
-    rows || '<tr><td colspan="6" class="empty">Nothing dispatched yet. Label an issue to begin.</td></tr>';
+    rows || '<tr><td colspan="7" class="empty">Nothing dispatched yet. Label an issue to begin.</td></tr>';
 
   document.getElementById("stamp").textContent =
     "· updated " + new Date(a.generatedAt).toLocaleTimeString();
+
+  await refreshDevin();
+}
+
+/**
+ * Devin's own view. Kept in its own request and its own try/catch: it crosses a
+ * network boundary we do not control, and a provider hiccup must not blank the
+ * numbers we already computed locally.
+ */
+async function refreshDevin() {
+  const tbody = document.querySelector("#devin tbody");
+  let sessions = [];
+  let note = "";
+  try {
+    const res = await fetch("/api/devin/insights");
+    const body = await res.json();
+    sessions = body.sessions || [];
+    if (body.error) note = body.error;
+  } catch (e) {
+    note = "could not reach the Devin API";
+  }
+
+  if (!sessions.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">' +
+      esc(note || "No sessions reported yet.") + '</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = sessions.map(s => {
+    const pr = s.pullRequests && s.pullRequests[0];
+    const detail = s.statusDetail ? s.status + "/" + s.statusDetail : s.status;
+    return '<tr>' +
+      '<td>' + (s.url
+        ? '<a href="' + esc(s.url) + '" target="_blank" rel="noopener">' + esc(s.title || s.sessionId) + '</a>'
+        : esc(s.title || s.sessionId)) + '</td>' +
+      '<td>' + esc(detail) + '</td>' +
+      '<td><code>' + esc((s.tags || []).join(" ")) + '</code></td>' +
+      '<td class="num">' + (s.acusConsumed === null ? "—" : s.acusConsumed) + '</td>' +
+      '<td>' + (pr
+        ? '<a href="' + esc(pr.url) + '" target="_blank" rel="noopener">#' +
+          esc(pr.url.split("/").pop()) + '</a> <span style="color:var(--muted)">' +
+          esc(pr.state) + '</span>'
+        : "—") + '</td>' +
+    '</tr>';
+  }).join("");
 }
 
 refresh();

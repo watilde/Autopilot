@@ -15,6 +15,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "seed": "tsx --env-file-if-exists=.env scripts/seed-issues.ts",
+    "devin:setup": "tsx --env-file-if-exists=.env scripts/devin-setup.ts",
     "simulate": "tsx --env-file-if-exists=.env scripts/simulate.ts",
     "report": "tsx --env-file-if-exists=.env scripts/report.ts"
   },

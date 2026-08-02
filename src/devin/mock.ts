@@ -27,7 +27,7 @@ function hash(s: string): number {
   return Math.abs(h);
 }
 
-type Outcome = 'fixed' | 'blocked' | 'expired' | 'finished_no_pr';
+type Outcome = 'fixed' | 'blocked' | 'expired' | 'finished_no_pr' | 'pr_then_idle';
 
 interface MockSession {
   id: string;
@@ -47,6 +47,12 @@ export interface MockOptions {
 export class DevinMockClient implements DevinClient {
   readonly mode = 'mock' as const;
   readonly apiVersion = 'mock' as const;
+  /**
+   * Everything sent back into a session, in order. Exposed because the thing
+   * worth asserting about the review-fix loop is not that it changed a state —
+   * it is that the failing build output actually reached the agent.
+   */
+  readonly messages: Array<{ sessionId: string; message: string }> = [];
   private sessions = new Map<string, MockSession>();
   private counter = 0;
   private readonly opts: MockOptions;
@@ -119,6 +125,26 @@ export class DevinMockClient implements DevinClient {
           },
         };
 
+      case 'pr_then_idle':
+        // The shape that cost this deployment two pull requests: the work is
+        // done and the PR is open, but the session has not exited, so a
+        // reconciler that checks the clock before the evidence kills it.
+        return {
+          ...base,
+          state: 'running',
+          rawStatus: 'running/working',
+          pullRequestUrl: prUrl,
+          structuredOutput: {
+            status: 'fixed',
+            summary: `Applied the remediation described in ${contractId ?? 'the issue'}.`,
+            files_changed: [`superset/example_${this.counter}.py`],
+            verification_passed: true,
+            verification_output: 'all verification commands exited 0',
+            pull_request_url: prUrl,
+            confidence: 'high',
+          },
+        };
+
       case 'blocked':
         return {
           ...base,
@@ -158,6 +184,7 @@ export class DevinMockClient implements DevinClient {
   async sendMessage(sessionId: string, message: string): Promise<void> {
     const s = this.sessions.get(sessionId);
     if (!s) throw new Error(`mock session ${sessionId} not found`);
+    this.messages.push({ sessionId, message });
     s.polls = 0; // an unblocking reply puts the session back to work
     if (s.outcome === 'blocked') s.outcome = 'fixed';
     s.input.prompt += `\n\n[operator] ${message}`;

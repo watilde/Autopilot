@@ -9,8 +9,9 @@ import type { Store } from '../db/index.js';
  * here are deliberately outcome-shaped:
  *
  *   - pull requests actually opened, not tasks attempted
- *   - success rate computed over *completed* work, so in-flight items cannot
- *     flatter it
+ *   - merge rate, because an unmerged PR is work the organisation declined
+ *   - success rate computed over work that reached a verdict, so neither
+ *     in-flight items nor withdrawn ones distort it
  *   - cycle time as median and p90, because the tail is what people feel
  *   - ACU spend per merged PR, so the thing has a defensible unit cost
  *   - failure reasons, grouped, so the next improvement is obvious
@@ -45,15 +46,34 @@ export interface AnalyticsSnapshot {
     succeeded: number;
     failed: number;
     timedOut: number;
+    cancelled: number;
+    /** succeeded + failed + timed_out: work that actually reached a verdict. */
+    concluded: number;
     prsOpened: number;
+    prsMerged: number;
+    prsClosed: number;
     falsePositives: number;
   };
   /** Share of completed remediations that reached a valid conclusion. */
   successRate: number | null;
   /** Share of completed remediations that produced a pull request. */
   prRate: number | null;
+  /** Share of opened pull requests that were merged — work actually accepted. */
+  mergeRate: number | null;
   cycleTimeSeconds: { p50: number | null; p90: number | null; mean: number | null };
-  acu: { total: number; perPr: number | null };
+  /** Issue accepted to pull request open: the number an SLA would be written against. */
+  timeToPrSeconds: { p50: number | null; p90: number | null };
+  /** Pull request open to merged, which is human review latency, not agent latency. */
+  timeToMergeSeconds: { p50: number | null };
+  /** What the pull request's own CI said, and how often Devin self-corrected. */
+  ci: { passed: number; failed: number; pending: number; reworks: number };
+  /**
+   * `reported` is false when the provider returned no ACU figures at all. That
+   * is not the same as "this was free", and the difference matters when the
+   * number is being used to argue a unit cost, so the rates are null rather
+   * than zero in that case.
+   */
+  acu: { total: number; reported: boolean; perPr: number | null; perMergedPr: number | null };
   byState: StateCount[];
   byCategory: CategoryBreakdown[];
   bySeverity: StateCount[];
@@ -84,7 +104,14 @@ export function buildAnalytics(store: Store): AnalyticsSnapshot {
       SUM(CASE WHEN state = 'succeeded'  THEN 1 ELSE 0 END)             AS succeeded,
       SUM(CASE WHEN state = 'failed'     THEN 1 ELSE 0 END)             AS failed,
       SUM(CASE WHEN state = 'timed_out'  THEN 1 ELSE 0 END)             AS timed_out,
+      SUM(CASE WHEN state = 'cancelled'  THEN 1 ELSE 0 END)             AS cancelled,
       SUM(CASE WHEN pr_url IS NOT NULL AND pr_url != '' THEN 1 ELSE 0 END) AS prs_opened,
+      SUM(CASE WHEN pr_state = 'merged'  THEN 1 ELSE 0 END)              AS prs_merged,
+      SUM(CASE WHEN pr_state = 'closed'  THEN 1 ELSE 0 END)              AS prs_closed,
+      SUM(CASE WHEN ci_status = 'passed' THEN 1 ELSE 0 END)              AS ci_passed,
+      SUM(CASE WHEN ci_status = 'failed' THEN 1 ELSE 0 END)              AS ci_failed,
+      SUM(CASE WHEN ci_status = 'pending' THEN 1 ELSE 0 END)             AS ci_pending,
+      COALESCE(SUM(reworks), 0)                                         AS reworks,
       SUM(CASE WHEN state = 'succeeded' AND (pr_url IS NULL OR pr_url = '') THEN 1 ELSE 0 END)
                                                                         AS false_positives,
       COALESCE(SUM(acu_used), 0)                                        AS acu_total
@@ -97,7 +124,19 @@ export function buildAnalytics(store: Store): AnalyticsSnapshot {
   const succeeded = num(totalsRow.succeeded);
   const failed = num(totalsRow.failed);
   const timedOut = num(totalsRow.timed_out);
+  const cancelled = num(totalsRow.cancelled);
+  /**
+   * Success is measured over work that reached a verdict, not over everything
+   * that stopped. A remediation an operator cancelled — budget, a duplicate, a
+   * change of plan — was withdrawn before the agent could be right or wrong
+   * about it, so counting it as a non-success measures our decisions rather
+   * than the system's output. Cancellations stay visible in `totals.cancelled`
+   * and in the state breakdown; they are excluded from this denominator only.
+   */
+  const concluded = succeeded + failed + timedOut;
   const prsOpened = num(totalsRow.prs_opened);
+  const prsMerged = num(totalsRow.prs_merged);
+  const prsClosed = num(totalsRow.prs_closed);
   const falsePositives = num(totalsRow.false_positives);
   const acuTotal = num(totalsRow.acu_total);
 
@@ -116,6 +155,23 @@ export function buildAnalytics(store: Store): AnalyticsSnapshot {
   const mean = durations.length
     ? durations.reduce((a, b) => a + b, 0) / durations.length
     : null;
+
+  // Two intervals, deliberately separate. Issue → PR is what the agent
+  // controls; PR → merged is human review latency. Reporting only the sum
+  // would let a slow review make the automation look slow, and a fast review
+  // hide a slow agent.
+  const elapsed = (from: string, to: string, where: string) =>
+    store
+      .query(
+        `SELECT (julianday(${to}) - julianday(${from})) * 86400.0 AS secs
+           FROM remediations WHERE ${where}`,
+      )
+      .map((r) => num(r.secs))
+      .filter((n) => Number.isFinite(n) && n >= 0)
+      .sort((a, b) => a - b);
+
+  const toPr = elapsed('created_at', 'pr_opened_at', "pr_opened_at IS NOT NULL");
+  const toMerge = elapsed('pr_opened_at', 'pr_merged_at', "pr_merged_at IS NOT NULL AND pr_opened_at IS NOT NULL");
 
   const byState: StateCount[] = store
     .query('SELECT state, COUNT(*) AS c FROM remediations GROUP BY state ORDER BY c DESC')
@@ -196,17 +252,35 @@ export function buildAnalytics(store: Store): AnalyticsSnapshot {
       succeeded,
       failed,
       timedOut,
+      cancelled,
+      concluded,
       prsOpened,
+      prsMerged,
+      prsClosed,
       falsePositives,
     },
-    successRate: completed > 0 ? succeeded / completed : null,
-    prRate: completed > 0 ? prsOpened / completed : null,
+    successRate: concluded > 0 ? succeeded / concluded : null,
+    prRate: concluded > 0 ? prsOpened / concluded : null,
+    mergeRate: prsOpened > 0 ? prsMerged / prsOpened : null,
     cycleTimeSeconds: {
       p50: percentile(durations, 50),
       p90: percentile(durations, 90),
       mean,
     },
-    acu: { total: acuTotal, perPr: prsOpened > 0 ? acuTotal / prsOpened : null },
+    timeToPrSeconds: { p50: percentile(toPr, 50), p90: percentile(toPr, 90) },
+    timeToMergeSeconds: { p50: percentile(toMerge, 50) },
+    ci: {
+      passed: num(totalsRow.ci_passed),
+      failed: num(totalsRow.ci_failed),
+      pending: num(totalsRow.ci_pending),
+      reworks: num(totalsRow.reworks),
+    },
+    acu: {
+      total: acuTotal,
+      reported: acuTotal > 0,
+      perPr: acuTotal > 0 && prsOpened > 0 ? acuTotal / prsOpened : null,
+      perMergedPr: acuTotal > 0 && prsMerged > 0 ? acuTotal / prsMerged : null,
+    },
     byState,
     byCategory,
     bySeverity,

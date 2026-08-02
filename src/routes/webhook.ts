@@ -20,12 +20,31 @@ interface GhIssue {
   labels?: Array<{ name?: string } | string>;
 }
 
+interface GhPullRequest {
+  number: number;
+  html_url: string;
+  state: string;
+  merged?: boolean;
+  merged_at?: string | null;
+  head?: { ref?: string };
+}
+
 interface GhPayload {
   action?: string;
   issue?: GhIssue;
   label?: { name?: string };
   comment?: { body?: string; user?: { login?: string } };
   repository?: { full_name?: string };
+  pull_request?: GhPullRequest;
+  workflow_run?: {
+    id: number;
+    name?: string;
+    head_branch?: string | null;
+    conclusion?: string | null;
+    status?: string;
+    html_url?: string;
+    pull_requests?: Array<{ number: number }>;
+  };
 }
 
 function toIssueRef(i: GhIssue): IssueRef {
@@ -84,6 +103,52 @@ export function registerWebhookRoutes(
     if (deliveryId && !store.recordDelivery(deliveryId, event, action)) {
       metrics.webhookDeliveries.inc({ event, action, result: 'duplicate' });
       return reply.code(200).send({ ok: true, deduplicated: true });
+    }
+
+    // --- workflow_run: the review-fix loop ------------------------------------
+    // CI is the one judgement in this system that Autopilot does not make. When
+    // it fails on a branch we opened, the failure goes back to the session that
+    // produced it rather than to a human's queue.
+    if (event === 'workflow_run') {
+      const run = payload.workflow_run;
+      const branch = run?.head_branch ?? '';
+      if (!run || action !== 'completed' || !branch.startsWith('autopilot/')) {
+        metrics.webhookDeliveries.inc({ event, action, result: 'ignored' });
+        return reply.code(202).send({ ok: true, ignored: 'not a completed autopilot run' });
+      }
+
+      const result = await orchestrator.handleCiResult({
+        branch,
+        conclusion: run.conclusion ?? 'unknown',
+        runId: run.id,
+        runUrl: run.html_url ?? null,
+      });
+      metrics.webhookDeliveries.inc({
+        event,
+        action,
+        result: result.handled ? 'accepted' : 'skipped',
+      });
+      return reply.code(202).send({ ok: true, ...result });
+    }
+
+    // --- pull_request: merge outcomes -----------------------------------------
+    if (event === 'pull_request') {
+      const pr = payload.pull_request;
+      const branch = pr?.head?.ref ?? '';
+      if (!pr || !branch.startsWith('autopilot/')) {
+        metrics.webhookDeliveries.inc({ event, action, result: 'ignored' });
+        return reply.code(202).send({ ok: true, ignored: 'not an autopilot pull request' });
+      }
+
+      const state = pr.merged ? 'merged' : pr.state === 'closed' ? 'closed' : 'open';
+      const updated = orchestrator.recordPullRequestEvent({
+        url: pr.html_url,
+        state,
+        mergedAt: pr.merged_at ?? null,
+        branch,
+      });
+      metrics.webhookDeliveries.inc({ event, action, result: updated ? 'accepted' : 'skipped' });
+      return reply.code(202).send({ ok: true, prState: state, remediationId: updated?.id ?? null });
     }
 
     if (event !== 'issues' && event !== 'issue_comment') {

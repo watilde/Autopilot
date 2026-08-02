@@ -53,6 +53,33 @@ export const cycleTime = new Histogram({
   registers: [registry],
 });
 
+/**
+ * Merged is the only outcome that means the fix shipped. Kept separate from
+ * `remediationsCompleted` so an alert can distinguish "the agent is producing
+ * work" from "the work is being accepted" — those degrade independently.
+ */
+export const pullRequests = new Counter({
+  name: 'autopilot_pull_requests_total',
+  help: 'Pull requests by final disposition',
+  labelNames: ['state', 'category'] as const,
+  registers: [registry],
+});
+
+export const ciResults = new Counter({
+  name: 'autopilot_ci_results_total',
+  help: "Verdicts from the pull request's own CI",
+  labelNames: ['status', 'category'] as const,
+  registers: [registry],
+});
+
+/** Self-corrections triggered by a CI failure, and how they ended. */
+export const reworks = new Counter({
+  name: 'autopilot_reworks_total',
+  help: 'CI failures sent back to a Devin session, by disposition',
+  labelNames: ['result', 'category'] as const,
+  registers: [registry],
+});
+
 export const devinApiErrors = new Counter({
   name: 'autopilot_devin_api_errors_total',
   help: 'Errors returned by the Devin API',

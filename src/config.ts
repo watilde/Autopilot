@@ -40,8 +40,22 @@ const schema = z.object({
   /** Required for v3 (`cog_` keys): Settings → Service Users. */
   DEVIN_ORG_ID: z.string().optional(),
   DEVIN_MAX_ACU: int(10),
+  /**
+   * Playbook every remediation session runs under. Holds the standing
+   * procedure (branch naming, when to stop, what the PR must say) so the
+   * per-issue prompt only has to carry the issue. Create one with
+   * `npm run devin:setup`; leaving this unset simply omits it.
+   */
+  DEVIN_PLAYBOOK_ID: z.string().optional(),
 
   AUTOPILOT_LABEL: z.string().default('autopilot'),
+  /**
+   * How many times a CI failure may be handed back to the same session before
+   * Autopilot stops and asks for a human. An agent that cannot fix its own
+   * build on the second try is usually stuck on something the contract did not
+   * anticipate, and looping costs ACUs to learn nothing.
+   */
+  MAX_CI_REWORKS: int(2),
   MAX_CONCURRENT_SESSIONS: int(3),
   RECONCILE_INTERVAL_MS: int(15_000),
   SESSION_TIMEOUT_MS: int(3_600_000),

@@ -49,7 +49,7 @@ export function buildServer(deps?: {
 
   registerDashboardRoutes(app);
   registerWebhookRoutes(app, store, orchestrator);
-  registerApiRoutes(app, store, orchestrator, scanner, github);
+  registerApiRoutes(app, store, orchestrator, scanner, github, devin);
 
   return { app, store, orchestrator, scanner, devin, github };
 }

@@ -55,6 +55,24 @@ describe('analytics', () => {
     expect(a.prRate).toBeCloseTo(1 / 3, 5);
   });
 
+  /**
+   * A cancellation is a decision, not a verdict: the operator withdrew the
+   * work before the agent could be right or wrong about it. Leaving it in the
+   * denominator would make "we paused three issues for budget" read as three
+   * failures.
+   */
+  it('excludes withdrawn work from the success rate but keeps it visible', () => {
+    const { store, ids } = seed();
+    store.transition(ids.d, 'cancelled', { error: 'paused for budget' });
+
+    const a = buildAnalytics(store);
+    expect(a.totals.cancelled).toBe(1);
+    expect(a.totals.completed).toBe(4); // everything that stopped
+    expect(a.totals.concluded).toBe(3); // everything that reached a verdict
+    expect(a.successRate).toBeCloseTo(2 / 3, 5);
+    expect(a.byState.find((s) => s.state === 'cancelled')?.count).toBe(1);
+  });
+
   it('reports null rates rather than NaN when nothing has completed', () => {
     const store = new Store(':memory:');
     store.create({
@@ -87,7 +105,33 @@ describe('analytics', () => {
     const { store } = seed();
     const a = buildAnalytics(store);
     expect(a.acu.total).toBe(7);
+    expect(a.acu.reported).toBe(true);
     expect(a.acu.perPr).toBeCloseTo(7, 5);
+  });
+
+  /**
+   * Not every plan returns ACU figures. Zero spend on work that demonstrably
+   * ran means "not reported", and publishing it as a unit cost of zero would
+   * be a false claim about the economics.
+   */
+  it('reports no unit cost when the provider returned no ACU data', () => {
+    const store = new Store(':memory:');
+    const r = store.create({
+      repo: 'watilde/superset',
+      issueNumber: 1,
+      issueUrl: '',
+      title: 't',
+      contractId: 'SEC-001',
+      category: 'security',
+      severity: 'high',
+      triggeredBy: 'test',
+    });
+    store.transition(r.id, 'succeeded', { prUrl: 'https://x/y/pull/1' });
+
+    const a = buildAnalytics(store);
+    expect(a.acu.total).toBe(0);
+    expect(a.acu.reported).toBe(false);
+    expect(a.acu.perPr).toBeNull();
   });
 
   it('groups failure reasons', () => {
@@ -102,5 +146,57 @@ describe('analytics', () => {
   it('records which trigger produced the work', () => {
     const { store } = seed();
     expect(buildAnalytics(store).triggers).toEqual([{ trigger: 'test', count: 4 }]);
+  });
+
+  /**
+   * Opening a pull request is output; merging it is outcome. A dashboard that
+   * conflates the two reports work the organisation declined as work
+   * delivered, so merge rate has its own denominator: PRs opened, not
+   * remediations completed.
+   */
+  describe('merge rate', () => {
+    it('is null until a pull request exists, then measures acceptance', () => {
+      const { store, ids } = seed();
+      expect(buildAnalytics(store).mergeRate).toBe(0); // one PR open, none merged
+
+      store.recordPullRequest(ids.a, { state: 'merged', mergedAt: '2026-01-01T00:00:00.000Z' });
+      const a = buildAnalytics(store);
+      expect(a.totals.prsMerged).toBe(1);
+      expect(a.mergeRate).toBeCloseTo(1, 5);
+      // Cost per merged PR is the defensible unit price; total spend includes
+      // the attempts that never shipped, and that is the point.
+      expect(a.acu.perMergedPr).toBeCloseTo(7, 5);
+    });
+
+    it('counts a closed-unmerged pull request against the rate', () => {
+      const { store, ids } = seed();
+      store.recordPullRequest(ids.a, { state: 'closed' });
+      const a = buildAnalytics(store);
+      expect(a.totals.prsClosed).toBe(1);
+      expect(a.mergeRate).toBe(0);
+    });
+
+    it('separates agent latency from human review latency', () => {
+      const { store, ids } = seed();
+      store.recordPullRequest(ids.a, { state: 'merged', mergedAt: '2030-01-01T00:00:00.000Z' });
+
+      const a = buildAnalytics(store);
+      // Time-to-PR is minutes here (the test just ran); time-to-merge is years
+      // away. Summing them would let slow review masquerade as a slow agent.
+      expect(a.timeToPrSeconds.p50).toBeLessThan(60);
+      expect(a.timeToMergeSeconds.p50).toBeGreaterThan(60);
+    });
+  });
+
+  it('reports CI verdicts and self-corrections', () => {
+    const { store, ids } = seed();
+    store.recordCi(ids.a, 'failed', { runUrl: 'https://x/runs/1' });
+    store.incrementReworks(ids.a);
+    store.recordCi(ids.a, 'passed');
+
+    const a = buildAnalytics(store);
+    expect(a.ci.passed).toBe(1);
+    expect(a.ci.failed).toBe(0); // superseded by the passing re-run
+    expect(a.ci.reworks).toBe(1);
   });
 });

@@ -54,16 +54,16 @@ something you could actually run against a real codebase:
   GitHub webhook  ──┐
   issues.labeled    │        ┌──────────────┐
                     ├──────► │   intake()   │  contract valid? already running?
-  Scheduled scan  ──┤        └──────┬───────┘
+  Scheduled scan  ──┤        └──────┬───────┘  already fixed and awaiting review?
   every 60s         │               │ queued
                     │               ▼
-  POST /api/trigger ┘        ┌──────────────┐   POST …/sessions
-                             │  dispatch()  │ ──────────────────────►  Devin
-                             └──────┬───────┘   prompt + JSON schema   v1 or v3
-                                    │ running                            │
-                                    ▼                                    │
-                             ┌──────────────┐   GET …/sessions/{id}      │
-                             │ reconcile()  │ ◄──────────────────────────┘
+  POST /api/trigger ┤        ┌──────────────┐   POST …/sessions
+                    │        │  dispatch()  │ ──────────────────────►  Devin
+  Scheduled Devin ──┘        └──────┬───────┘   prompt + playbook      v1 or v3
+  files new issues                  │ running   + JSON schema             │
+                                    ▼                                     │
+                             ┌──────────────┐   GET …/sessions/{id}       │
+                             │ reconcile()  │ ◄───────────────────────────┘
                              └──────┬───────┘   every 15s, normalised
                                     │
                      ┌──────────────┼──────────────┐
@@ -79,6 +79,23 @@ something you could actually run against a real codebase:
                      ▼              ▼              ▼
                  dashboard      /metrics       npm run report
                     /          Prometheus         terminal
+
+  REVIEW-FIX LOOP
+  ───────────────
+                             ┌──────────────┐
+   PR opened  ──► CI runs ──►│ contract     │  re-runs the issue's own
+   on the fork   the same    │ verification │  verify commands on the PR
+                 contract    └──────┬───────┘
+                                    │ failure
+                                    ▼
+   workflow_run webhook  ──► ┌──────────────┐   POST …/sessions/{id}/messages
+   (or the CI poll, when ──► │handleCiResult│ ──────────────────────────► Devin
+    no webhook is wired)     └──────┬───────┘   failing log, same session
+                                    │
+                        ┌───────────┴───────────┐
+                        ▼                       ▼
+              Devin pushes a fix        rework cap reached
+              to the same branch        ──► label autopilot:needs-human
 ```
 
 ### Why it's shaped this way
@@ -107,6 +124,28 @@ agent's summary.
 **The event log is the source of truth.** Every state transition appends a row.
 Metrics are derived from it, which means the numbers survive a restart and are
 auditable after an incident.
+
+**CI checks the agent's homework.** Devin reports `verification_passed`, but
+that is a claim by the thing that wrote the code. The
+[`autopilot-verify`](https://github.com/watilde/superset/blob/master/.github/workflows/autopilot-verify.yml)
+workflow on the fork reads the contract *off the linked issue* and re-runs the
+same `verify` commands against the pull request. One definition of done, checked
+by two parties, one of which has no stake in the answer.
+
+**A CI failure goes back to the agent, not to a person.** This is the part a
+version-bump bot cannot do. The failing log is sent into the same session, which
+still holds the context of the change it made, and it fixes forward on the same
+branch. Capped by `MAX_CI_REWORKS`: an agent that cannot fix its own build twice
+is stuck on something the contract did not anticipate, so the issue gets labelled
+`autopilot:needs-human` rather than looping on ACUs.
+
+**Evidence outranks the clock.** A session does not exit the moment it opens a
+pull request — it often stops and asks whether anything else is wanted. So the
+reconciler records a PR as soon as it exists, in any session state, and the
+timeout judges what was produced before deciding a session failed. Getting this
+backwards cost this deployment two merge-ready PRs recorded as timeouts and two
+duplicate paid sessions behind them; the story is in
+[Things that went wrong](#things-that-went-wrong).
 
 ---
 
@@ -171,9 +210,34 @@ lifecycle across `status` + `status_detail`, returns a `pull_requests` array and
 reports `acus_consumed`. Each client normalises into one internal shape, so the
 state machine never learns either dialect.
 
-Point a GitHub webhook at `https://<host>/webhooks/github` — content type
-`application/json`, events **Issues** and **Issue comments** — then label an
-issue `autopilot`.
+### Wiring the webhook
+
+Events: **Issues**, **Issue comments**, **Pull requests**, **Workflow runs** —
+the last two drive merge tracking and the review-fix loop. Content type
+`application/json`, and a secret, because the endpoint is the only
+unauthenticated way into a system that spends money.
+
+```bash
+# 1. a secret, and a public URL for a service running on a laptop
+openssl rand -hex 32                       # -> GITHUB_WEBHOOK_SECRET in .env
+cloudflared tunnel --url http://localhost:8080
+
+# 2. register it (reads the secret from .env, never echoes it)
+set -a; . .env; set +a
+gh api -X POST repos/$GITHUB_OWNER/$GITHUB_REPO/hooks -f name=web -F active=true \
+  -f 'events[]=issues' -f 'events[]=issue_comment' \
+  -f 'events[]=pull_request' -f 'events[]=workflow_run' \
+  -f config[url]=https://<your-tunnel>.trycloudflare.com/webhooks/github \
+  -f config[content_type]=json -f config[secret]="$GITHUB_WEBHOOK_SECRET"
+
+# 3. prove both halves: a signed delivery is accepted, an unsigned one is not
+gh api -X POST repos/$GITHUB_OWNER/$GITHUB_REPO/hooks/<id>/pings     # 200
+curl -s -o /dev/null -w '%{http_code}\n' -X POST \
+  https://<your-tunnel>.trycloudflare.com/webhooks/github \
+  -H 'content-type: application/json' -H 'x-github-event: ping' -d '{}'   # 401
+```
+
+Then label an issue `autopilot`.
 
 Without a public host, use the scheduled scanner or trigger directly:
 
@@ -251,15 +315,30 @@ ship nothing. So the metrics are outcome-shaped.
 
 **The numbers that matter:**
 
-- **Pull requests opened** — merge-ready output, not tasks attempted.
-- **Success rate over *completed* work.** In-flight items are excluded from the
-  denominator; otherwise labelling a new issue would make the system look worse.
-- **Median and p90 cycle time** — the tail is what people feel.
-- **ACUs per pull request** — a defensible unit cost.
+- **Merged pull requests, and merge rate.** Opening a PR is output; merging it
+  is outcome. An unmerged PR is work the organisation declined, and a dashboard
+  that reports the first as though it were the second is flattering itself.
+- **Success rate over work that reached a verdict.** In-flight items are
+  excluded, or labelling a new issue would make the system look worse. So are
+  operator-cancelled ones: a withdrawn remediation measures our decision, not
+  the agent's performance. Cancellations stay visible in the state breakdown.
+- **Time to PR, separately from time to merge.** The first is agent latency, the
+  second is human review latency. Summing them lets a slow review masquerade as
+  a slow agent.
+- **CI verdicts and self-corrections** — how often the independent check
+  rejected the work, and how often the agent fixed it without a human.
+- **ACUs per merged pull request** — a defensible unit cost. Reported as `—`,
+  not `0`, when the provider returns no ACU data: "not measured" and "free" are
+  different claims.
 - **False positives, tracked separately.** A well-argued "this report was wrong"
   is a success that produces no PR, and conflating it with a shipped fix would
   corrupt both numbers.
 - **Grouped failure reasons** — so the next improvement is obvious.
+
+`GET /api/devin/insights` adds the provider's own view of the same sessions —
+tags, ACUs, pull requests, as Devin recorded them. It is not new information;
+it is *independent* information, and it is where a disagreement between what
+this service claims to have sent and what Devin received would show up.
 
 ```
   OUTCOMES
@@ -293,20 +372,48 @@ shot — they need a machine that can run commands and respond to what comes bac
 an environment can only *claim* the tests pass. Devin's sandbox is what turns
 "the agent thinks it fixed it" into "the commands exited 0, here is the output".
 
+**It argues back, and it is sometimes right.** This is the property that
+separates an agent from a bot, and it is not hypothetical here. QUAL-002's
+contract told Devin to verify with `npx tsc --noEmit -p tsconfig.json`. It got
+the other checks passing, then stopped and reported that the type-check fails
+with 598 `TS6305` errors in any clean checkout, because the root `tsconfig.json`
+uses composite project references whose plugin outputs must be built first — and
+that this was outside the contract's scope to fix. That was correct. A bot would
+have failed silently, or worse, disabled the check to get green. The fix was to
+amend the *contract*, in the issue, which both Devin and CI read. Twice more it
+declined to open a duplicate pull request when it found its own earlier work
+already on the branch.
+
 A scripted codemod could handle SEC-001 and QUAL-002. It could not handle
-QUAL-001 (design a shared helper, write its tests, update three call sites) or
-DEP-001 (investigate and reach a judgement). The point of the contract format is
-that *the same pipeline* handles all four.
+QUAL-001 (design a shared helper, write its tests, update three call sites),
+DEP-001 (investigate a dependency tree and reach a defensible "not yet"), or any
+of the judgement calls above. The point of the contract format is that *the same
+pipeline* handles all of them.
+
+**Versus the alternatives, specifically:**
+
+| | Why it isn't enough here |
+|---|---|
+| Dependabot | Answers one question — "is there a newer version?" — and cannot answer DEP-001, which is *why* the ceiling exists and whether the condition for lifting it has been met. |
+| A deterministic codemod | Fine for SEC-001's one-line substitution. Has nothing to say when CI fails for a reason the author did not anticipate, which is most of the times CI fails. |
+| A chat assistant | Produces a diff in someone's editor. The bottleneck is not writing the fix, it is the hour of investigation, verification and PR authorship around it, which needs an environment and no human in the loop. |
 
 ---
 
 ## Design notes
 
-**Idempotency at three layers.** GitHub retries deliveries, so delivery UUIDs are
-recorded and replays short-circuit. Intake refuses an issue that already has a
-non-terminal remediation. Sessions are created with `idempotent: true` as
-defence in depth at the provider. Duplicate work is the most expensive mistake
-this system could make.
+**Idempotency at five layers**, because duplicate work is the most expensive
+mistake this system can make, and it turned out to have more ways in than the
+first three guards covered:
+
+1. Delivery UUIDs are recorded, so a webhook retry short-circuits.
+2. Intake refuses an issue that already has a non-terminal remediation.
+3. Intake refuses an issue whose fix is *already open as a pull request* — a
+   finished remediation is terminal, but the issue stays open until the PR
+   merges, so without this the periodic scanner sees fresh work every sweep.
+4. Dispatch re-checks (3) immediately before spending, because a queued
+   remediation can outlive the state it was accepted in.
+5. Sessions are created with `idempotent: true` where the API supports it.
 
 **HMAC over raw bytes.** The webhook endpoint is the only unauthenticated entry
 point, and a forgery would let anyone spend the Devin budget. The server keeps
@@ -335,6 +442,55 @@ so there's no `node-gyp` in the build and no compiler in the runtime image.
 
 ---
 
+## Things that went wrong
+
+Kept here deliberately. Every item below is visible in the issue threads, the
+event log and the cancelled rows on the dashboard — none of it has been tidied
+away, because a clean trail that isn't true is worth less than a messy one that
+is.
+
+**The reconciler killed two successful sessions.** The timeout was checked
+before the session was read, so a session that had already opened a pull request
+and then idled was recorded as `timed_out`. Two merge-ready PRs (#6, #7) were
+reported as failures. Fixed by reading the session first and judging the
+evidence: a timeout may no longer discard work that exists. `adoptOrphanedPullRequests()`
+then repaired the historical rows from the provider's own record, and posted a
+correction comment on each issue.
+
+**Then the scanner paid for the same work three more times.** With those
+remediations terminal and their issues still open and labelled, every sweep
+looked like fresh work. Four duplicate sessions were dispatched across issues
+\#1 and #2 before the two new dedup gates landed. Devin caught every one of them
+— it found its own branch already pushed and declined to open a second PR — so
+the cost was ACUs rather than a mess of pull requests, but the orchestrator
+should never have asked.
+
+**A blocked session with a pull request was invisible.** Devin's common shape is
+to open the PR and *then* stop to ask whether anything else is wanted. Until the
+reconciler started recording a PR the moment it exists, that work was missing
+from the dashboard, from merge rate, and — worst — from the dedup gate.
+
+**Two contracts specified verification that could not pass.** QUAL-001 and
+QUAL-002 both called `npx tsc --noEmit -p tsconfig.json`, which fails in any
+clean checkout of this repository. Devin diagnosed it precisely and escalated
+instead of working around it; the contracts were amended in the issues, which is
+the one place both the agent and CI read.
+
+**CI on the fork had never run.** GitHub does not register workflows on a fork
+until something is pushed, and the 45 inherited Apache Superset workflows would
+have buried every PR in unrelated red. They are disabled at the API level, with
+only `autopilot-verify` active. The frontend install also needed a fallback: the
+fork's `package-lock.json` has drifted from `package.json` upstream, and `npm ci`
+refusing to install is not a verdict on the change under review.
+
+**Cost data is missing, and is shown as missing.** Every session in this
+organisation reports `acus_consumed: 0.0`, and `/v3/enterprise/consumption/daily`
+returns 403 for an org-scoped service user. The unit-cost tiles therefore read
+`—`. Publishing a unit cost of zero would have been the easy option and a false
+claim.
+
+---
+
 ## Configuration
 
 | Variable | Default | Notes |
@@ -342,10 +498,12 @@ so there's no `node-gyp` in the build and no compiler in the runtime image.
 | `DEVIN_MODE` | `mock` | `live` calls the real API |
 | `DEVIN_API_KEY` | — | required when live |
 | `DEVIN_MAX_ACU` | `10` | per-session ceiling; a runaway task can't silently burn budget |
+| `DEVIN_PLAYBOOK_ID` | — | standing procedure every session runs under; `npm run devin:setup` creates it |
 | `GITHUB_TOKEN` | — | `repo` scope |
 | `GITHUB_WEBHOOK_SECRET` | — | required unless `ALLOW_UNSIGNED_WEBHOOKS=true` |
 | `AUTOPILOT_LABEL` | `autopilot` | the label that arms an issue |
 | `MAX_CONCURRENT_SESSIONS` | `3` | backpressure on spend |
+| `MAX_CI_REWORKS` | `2` | CI failures handed back to a session before escalating to a human |
 | `RECONCILE_INTERVAL_MS` | `15000` | poll cadence |
 | `SESSION_TIMEOUT_MS` | `3600000` | after this, fail and terminate |
 
@@ -362,7 +520,13 @@ Full list in [`.env.example`](.env.example).
 | `POST` | `/api/remediations/:id/reply` | answer a blocked session — `{"message": "…"}` |
 | `POST` | `/api/remediations/:id/cancel` | stop one remediation — `{"reason": "…"}` |
 | `GET` | `/api/analytics` \| `/api/remediations` \| `/api/events` | reporting |
+| `GET` | `/api/devin/insights` | the provider's own view of the same sessions |
 | `GET` | `/healthz` \| `/metrics` | ops |
+
+Webhook events handled: `issues` (label-driven intake), `issue_comment`
+(`/autopilot retry`), `pull_request` (merge outcomes), `workflow_run` (the
+review-fix loop). The last two also have polling fallbacks, so no capability
+depends on having a public tunnel.
 
 Operators can also comment `/autopilot retry` on an issue.
 
@@ -376,30 +540,58 @@ curl -X POST localhost:8080/api/remediations/1/reply \
 
 ## Tests
 
+Two layers, because they fail differently.
+
+**This orchestrator** — `npm test`, 129 tests, no network:
+
 ```bash
-npm test         # 97 tests
+npm test
 npm run typecheck
 ```
 
 Covering contract parsing and its **refusal** paths, HMAC verification including
 malformed input, delivery idempotency, the concurrency cap, the full
 intake → dispatch → reconcile lifecycle across every terminal state, the
-finished-without-PR judgement, the operator controls (cancel frees capacity
-before dispatch; a reply returns a blocked session to `running`), and analytics
-arithmetic (including that success rate is computed over completed work only).
+finished-without-PR judgement, the operator controls, the review-fix loop
+(a failure reaches the session, a passing build is left alone, the rework cap
+escalates, a second failing run is a new verdict), pull-request lifecycle and
+merge-rate arithmetic, and the two regressions above — evidence outranking the
+clock, and the dedup gate finding a PR held by an older attempt. The webhook
+ingress is exercised through a real Fastify instance, signature and all.
+
+**The remediations themselves** — on the pull request, by
+[`autopilot-verify`](https://github.com/watilde/superset/blob/master/.github/workflows/autopilot-verify.yml),
+which re-runs the contract's own `verify` commands. `ruff`, `pytest`, `tsc` and
+`jest` results on the PR come from GitHub Actions, not from a local terminal and
+not from the agent's own report.
 
 ## Extending this
 
 - **More triggers.** Dependabot alerts, CodeQL results, Sentry issues — anything
   that can produce a contract. Intake doesn't care where an issue came from.
-- **Playbooks.** Devin `playbook_id` per category, so security fixes follow a
-  reviewed procedure.
-- **Close the loop on review.** Feed PR review comments back via
-  `POST /sessions/{id}/messages` so Devin addresses feedback in-session.
+- **A playbook per category.** One standing procedure exists today; security
+  fixes and dependency audits deserve different ones.
+- **Human review feedback, not just CI.** The review-fix loop currently answers
+  to the build. `pull_request_review` comments could go back into the session
+  the same way, so a reviewer's "why not use X here?" is answered in-session.
 - **Auto-merge the trivial tier.** QUAL-002-class changes with green CI and high
   confidence could merge unattended; SEC-* never should.
 - **Cost governance.** ACU budgets per team, with the dashboard showing spend
-  against them.
+  against them — blocked today by the provider not reporting ACUs on this plan.
+
+## Devin features in use
+
+| Feature | Where |
+|---|---|
+| v3 sessions, org-scoped | `src/devin/client-v3.ts` — inferred from the `cog_` key prefix |
+| Structured output schema | Every session; success is decided from data, not prose |
+| Tags and titles | `contract:`, `issue:`, `category:`, `severity:` — visible in the Devin dashboard, and cross-checked at `/api/devin/insights` |
+| ACU ceiling | `max_acu_limit` on every session |
+| Playbooks | The standing remediation procedure; `npm run devin:setup` |
+| Scheduled sessions | A weekly audit that files new contract-carrying issues, so the backlog refills without anyone remembering to look |
+| Session messages | The review-fix loop and `POST …/reply` both resume a session in place |
+| Session analytics | `/api/devin/insights`, and the "As reported by Devin" panel on the dashboard |
+| Session termination | Operator cancel, and the timeout path |
 
 ## Layout
 
@@ -424,9 +616,13 @@ src/
 scripts/
   issues.ts          the five contracts
   seed-issues.ts     create labels + issues
+  devin-setup.ts     provision the playbook and the scheduled audit
   simulate.ts        end-to-end demo driver
   report.ts          terminal report
 ```
+
+The CI half lives in the target repository, not here:
+[`.github/workflows/autopilot-verify.yml`](https://github.com/watilde/superset/blob/master/.github/workflows/autopilot-verify.yml).
 
 ## Licence
 

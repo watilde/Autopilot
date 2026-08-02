@@ -3,6 +3,8 @@ import { config } from '../config.js';
 import type { Store } from '../db/index.js';
 import type { Orchestrator } from '../core/orchestrator.js';
 import type { Scanner } from '../core/scanner.js';
+import type { DevinClient } from '../devin/types.js';
+import { supportsPlatformApi } from '../devin/types.js';
 import type { GitHubClient } from '../github/client.js';
 import { buildAnalytics } from '../obs/analytics.js';
 import { registry } from '../obs/metrics.js';
@@ -18,6 +20,7 @@ export function registerApiRoutes(
   orchestrator: Orchestrator,
   scanner: Scanner,
   github: GitHubClient,
+  devin: DevinClient,
 ): void {
   app.get('/healthz', async () => ({
     status: 'ok',
@@ -34,6 +37,30 @@ export function registerApiRoutes(
   });
 
   app.get('/api/analytics', async () => buildAnalytics(store));
+
+  /**
+   * The same sessions, counted by Devin instead of by us.
+   *
+   * Autopilot already records session ids, ACUs and pull requests, so this is
+   * not new information — it is *independent* information. If the tags and
+   * prompts we claim to have sent are not the ones Devin received, this is
+   * where that shows up, and a reviewer can check it against the Devin
+   * dashboard without taking our word for anything.
+   */
+  app.get('/api/devin/insights', async (_req, reply) => {
+    if (!supportsPlatformApi(devin)) {
+      return reply.code(501).send({
+        error: `session insights need the v3 API; this client is ${devin.apiVersion} in ${devin.mode} mode`,
+        sessions: [],
+      });
+    }
+    try {
+      return { sessions: await devin.listSessionInsights(50) };
+    } catch (err) {
+      // Reporting must never take the dashboard down with it.
+      return reply.code(502).send({ error: (err as Error).message, sessions: [] });
+    }
+  });
 
   app.get('/api/remediations', async (req) => {
     const { state, limit } = req.query as { state?: string; limit?: string };

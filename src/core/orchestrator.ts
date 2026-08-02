@@ -1,10 +1,15 @@
 import { config } from '../config.js';
 import type { Store } from '../db/index.js';
 import { DevinApiError, type DevinClient } from '../devin/index.js';
-import type { GitHubClient, IssueRef } from '../github/client.js';
+import { parsePullRequestNumber, type GitHubClient, type IssueRef } from '../github/client.js';
 import { logger } from '../logger.js';
 import * as metrics from '../obs/metrics.js';
-import { isTerminal, type Remediation, type RemediationState } from '../types.js';
+import {
+  isTerminal,
+  type PullRequestState,
+  type Remediation,
+  type RemediationState,
+} from '../types.js';
 import { branchFor, parseContract } from './contract.js';
 import {
   REMEDIATION_OUTPUT_SCHEMA,
@@ -92,6 +97,42 @@ export class Orchestrator {
       };
     }
 
+    /**
+     * Second dedup gate: an issue whose fix is already sitting in an open pull
+     * request is not work, it is work awaiting review.
+     *
+     * The in-flight check above is not enough, and the gap is expensive. A
+     * remediation that finished is terminal, but the issue it fixed stays open
+     * until the PR merges — that is what `Closes #N` means. So a labelled,
+     * open issue with a merge-ready PR looks exactly like fresh work to the
+     * periodic scanner, and it re-dispatches on the next sweep, and the one
+     * after that. This deployment paid for duplicate sessions on two issues
+     * before the gate existed; Devin caught them and refused to open a second
+     * PR, which is the only reason it cost ACUs rather than a mess of pull
+     * requests.
+     *
+     * The lookup spans every attempt, not just the newest. The attempt holding
+     * the pull request is usually an older one, with a cancelled duplicate
+     * sitting on top of it.
+     */
+    const fixed = this.store.findLivePullRequestForIssue(this.repoSlug, issue.number);
+    if (fixed) {
+      this.store.appendEvent({
+        remediationId: fixed.id,
+        issueNumber: issue.number,
+        type: 'intake.deduplicated',
+        detail: { reason: 'open pull request', prUrl: fixed.prUrl, prState: fixed.prState },
+      });
+      return {
+        accepted: false,
+        reason:
+          fixed.prState === 'merged'
+            ? `already fixed and merged (${fixed.prUrl}); close the issue or remove the label`
+            : `already fixed, awaiting review (${fixed.prUrl})`,
+        remediation: fixed,
+      };
+    }
+
     const parsed = parseContract(issue.body);
     if (!parsed.ok) {
       log.warn({ reason: parsed.reason }, 'intake rejected: invalid contract');
@@ -158,6 +199,25 @@ export class Orchestrator {
   private async startSession(r: Remediation): Promise<boolean> {
     const log = logger.child({ remediation: r.id, issue: r.issueNumber });
 
+    /**
+     * Last gate before spending money.
+     *
+     * Intake already refuses an issue with a live pull request, but a queued
+     * remediation can outlive the state it was accepted in: a sibling attempt
+     * may have opened a PR while this one sat in the queue, or the row may
+     * predate the intake gate entirely. Checking again here costs one local
+     * query; not checking costs a Devin session.
+     */
+    const fixed = this.store.findLivePullRequestForIssue(this.repoSlug, r.issueNumber);
+    if (fixed && fixed.id !== r.id) {
+      log.info({ prUrl: fixed.prUrl, by: fixed.id }, 'skipping dispatch: issue already has a pull request');
+      this.store.transition(r.id, 'cancelled', {
+        error: `superseded: remediation ${fixed.id} already opened ${fixed.prUrl}`,
+      });
+      metrics.dispatches.inc({ result: 'deduplicated', category: r.category ?? 'unknown' });
+      return false;
+    }
+
     // Re-read the issue at dispatch time rather than trusting the webhook
     // payload: the body may have been edited between labelling and dispatch,
     // and the contract is what we are about to act on.
@@ -202,6 +262,7 @@ export class Orchestrator {
         title: sessionTitle(contract, r.issueNumber),
         tags: sessionTags(contract, r.issueNumber),
         idempotent: true,
+        playbookId: config.DEVIN_PLAYBOOK_ID,
         maxAcuLimit: config.DEVIN_MAX_ACU,
         structuredOutputSchema: REMEDIATION_OUTPUT_SCHEMA,
       });
@@ -321,6 +382,318 @@ export class Orchestrator {
   }
 
   // -------------------------------------------------------------------------
+  // Review-fix loop
+  // -------------------------------------------------------------------------
+
+  /**
+   * Hand a CI failure back to the session that caused it.
+   *
+   * This is the part that makes the system worth building rather than
+   * scripting. A deterministic bot's output is final: if the patch fails the
+   * build, a human picks it up. Here the failing log goes back to the agent
+   * that wrote the patch, with its original context intact, and it tries
+   * again — the same loop a human engineer runs, minus the wait.
+   *
+   * Three limits keep that honest. Rework is capped, because an agent that
+   * cannot fix its own build twice is stuck on something the contract did not
+   * anticipate and further attempts just spend ACUs. Only Autopilot's own
+   * branches are eligible. And when the cap is hit the issue is labelled for a
+   * human rather than quietly abandoned — an escalation that nobody is told
+   * about is the same as a failure that nobody sees.
+   */
+  async handleCiResult(input: {
+    branch: string;
+    conclusion: string;
+    runId: number | null;
+    runUrl: string | null;
+    prUrl?: string | null;
+  }): Promise<{ handled: boolean; reason: string; remediationId?: number }> {
+    const r = this.findByBranchOrPr(input.branch, input.prUrl ?? null);
+    if (!r) return { handled: false, reason: 'no remediation matches this branch' };
+
+    const log = logger.child({ remediation: r.id, issue: r.issueNumber, branch: input.branch });
+    const category = r.category ?? 'unknown';
+    const passed = input.conclusion === 'success';
+
+    this.store.recordCi(
+      r.id,
+      passed ? 'passed' : 'failed',
+      { conclusion: input.conclusion, runUrl: input.runUrl },
+      input.runId,
+    );
+    metrics.ciResults.inc({ status: passed ? 'passed' : 'failed', category });
+
+    if (passed) {
+      log.info('ci passed on remediation branch');
+      return { handled: true, reason: 'ci passed', remediationId: r.id };
+    }
+
+    if (!r.devinSessionId) {
+      return { handled: false, reason: 'remediation has no session to correct', remediationId: r.id };
+    }
+
+    if (r.reworks >= config.MAX_CI_REWORKS) {
+      metrics.reworks.inc({ result: 'escalated', category });
+      log.warn({ reworks: r.reworks }, 'ci rework cap reached, escalating to a human');
+      await this.github.addLabels(r.issueNumber, ['autopilot:needs-human']);
+      await this.github.comment(
+        r.issueNumber,
+        [
+          '### 🙋 Autopilot is escalating this to a human',
+          '',
+          `CI has failed ${r.reworks + 1} times on \`${input.branch}\` and Devin has already been`,
+          `given ${r.reworks} chance(s) to correct it. Rather than spend more ACUs on the same`,
+          'loop, Autopilot has stopped and is handing this back.',
+          '',
+          input.runUrl ? `Failing run: ${input.runUrl}` : '',
+          r.prUrl ? `Pull request: ${r.prUrl}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n'),
+      );
+      return { handled: true, reason: 'rework cap reached; escalated', remediationId: r.id };
+    }
+
+    const failureLog = input.runId ? await this.github.failureLog(input.runId) : null;
+    const attempt = this.store.incrementReworks(r.id);
+
+    await this.devin.sendMessage(
+      r.devinSessionId,
+      [
+        `CI failed on the pull request you opened for issue #${r.issueNumber}.`,
+        '',
+        'The verification job re-runs the same `verify` commands from the issue contract',
+        'that you ran locally, so this is the contract itself failing, not a separate',
+        'standard. Please diagnose the failure below, push a fix to the same branch',
+        `(\`${input.branch}\`), and confirm the checks pass. Do not open a new pull request.`,
+        '',
+        input.runUrl ? `Failing run: ${input.runUrl}` : '',
+        '',
+        failureLog
+          ? ['```', failureLog, '```'].join('\n')
+          : '_The workflow logs could not be retrieved; check the run link above._',
+      ]
+        .filter((l) => l !== '')
+        .join('\n'),
+    );
+
+    // Back to non-terminal: the work is genuinely in flight again, and the
+    // dashboard should say so rather than reporting a success that CI rejected.
+    const updated = this.store.transition(r.id, 'running', {}, {
+      reason: 'ci failed; returned to devin',
+      runUrl: input.runUrl,
+      reworkAttempt: attempt,
+    });
+    metrics.reworks.inc({ result: 'sent', category });
+    metrics.activeRemediations.set(this.store.countActive());
+
+    log.info({ reworkAttempt: attempt }, 'ci failure returned to devin session');
+    await this.github.comment(
+      r.issueNumber,
+      [
+        `### 🔁 CI failed — Devin is correcting it (attempt ${attempt} of ${config.MAX_CI_REWORKS})`,
+        '',
+        'The contract verification job failed on the pull request. The failing output has',
+        'been sent back to the same Devin session, which still has the full context of the',
+        'change it made, so it can fix forward on the same branch.',
+        '',
+        input.runUrl ? `Failing run: ${input.runUrl}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    );
+
+    return { handled: true, reason: 'failure returned to devin', remediationId: updated.id };
+  }
+
+  /**
+   * Map a CI event back to the remediation that caused it.
+   *
+   * The PR URL is authoritative when we have it. The branch is the fallback,
+   * and it works because Autopilot names branches after the contract and issue
+   * it dispatched — `autopilot/<contract>-issue-<n>` — so the naming convention
+   * doubles as the join key when a webhook arrives before we recorded a PR.
+   */
+  private findByBranchOrPr(branch: string, prUrl: string | null): Remediation | null {
+    if (prUrl) {
+      const byPr = this.store.findByPullRequest(prUrl);
+      if (byPr) return byPr;
+    }
+    const m = /-issue-(\d+)$/.exec(branch);
+    if (!m) return null;
+    return this.store.findLatestByIssue(this.repoSlug, Number(m[1]));
+  }
+
+  // -------------------------------------------------------------------------
+  // Pull request outcomes
+  // -------------------------------------------------------------------------
+
+  /**
+   * Ask GitHub what became of the pull requests we opened.
+   *
+   * Merge state arrives by webhook when one is configured, but the poll is
+   * what makes the merge rate trustworthy: a webhook that was never delivered
+   * and a PR that was never merged look identical from here, and only one of
+   * those is acceptable to guess at. Bounded by design — it only looks at PRs
+   * that have not yet reached a resting state.
+   */
+  /**
+   * Adopt pull requests that exist but that we never recorded.
+   *
+   * A remediation can reach a terminal state without its PR attached — the
+   * reconciler timed the session out before it exited, a poll failed at the
+   * wrong moment, the process restarted mid-flight. Whatever the cause, the
+   * result is the same and it is the worst kind of wrong: real, merge-ready
+   * work that the dashboard reports as a failure, and an issue that looks
+   * eligible for a second paid session.
+   *
+   * Devin is the authority on what its own session produced, so ask it. Only
+   * terminal remediations with a session and no PR are considered, so this is
+   * bounded and cannot fight with the live reconcile path.
+   */
+  async adoptOrphanedPullRequests(): Promise<number> {
+    let adopted = 0;
+
+    for (const r of this.store.listTerminalWithoutPullRequest()) {
+      let session;
+      try {
+        session = await this.devin.getSession(r.devinSessionId!);
+      } catch (err) {
+        logger.debug(
+          { remediation: r.id, err: (err as Error).message },
+          'could not re-read session while looking for an orphaned pull request',
+        );
+        continue; // No stamp: a transport failure is not an answer.
+      }
+
+      this.store.markPullRequestChecked(r.id);
+
+      const verdict = this.judge(session.structuredOutput, session.pullRequestUrl);
+      if (!verdict.prUrl) continue;
+
+      this.store.transition(r.id, verdict.state, {
+        prUrl: verdict.prUrl,
+        structuredOutput: session.structuredOutput ?? undefined,
+        acuUsed: session.acuUsed ?? undefined,
+        error: verdict.state === 'succeeded' ? null : verdict.reason,
+      }, { adopted: true, previousState: r.state, reason: 'pull request found on the session' });
+
+      this.store.recordPullRequest(r.id, { url: verdict.prUrl, state: 'open' });
+      metrics.pullRequests.inc({ state: 'open', category: r.category ?? 'unknown' });
+      adopted++;
+
+      logger.info(
+        { remediation: r.id, issue: r.issueNumber, prUrl: verdict.prUrl, was: r.state },
+        'adopted a pull request the session had already opened',
+      );
+      await this.github.comment(
+        r.issueNumber,
+        [
+          '### 🔎 Autopilot corrected its own record',
+          '',
+          `This remediation was recorded as \`${r.state}\`, but the Devin session had already`,
+          `opened ${verdict.prUrl}. The state has been corrected to \`${verdict.state}\` and the`,
+          'pull request is now tracked.',
+        ].join('\n'),
+      );
+    }
+    return adopted;
+  }
+
+  async syncPullRequests(): Promise<number> {
+    if (!this.github.enabled) return 0;
+    let changed = 0;
+
+    for (const r of this.store.listAwaitingPullRequestOutcome()) {
+      const number = parsePullRequestNumber(r.prUrl);
+      if (!number) continue;
+
+      const pr = await this.github.getPullRequest(number);
+      if (!pr || pr.state === r.prState) continue;
+
+      this.store.recordPullRequest(r.id, { url: pr.url, state: pr.state, mergedAt: pr.mergedAt });
+      metrics.pullRequests.inc({ state: pr.state, category: r.category ?? 'unknown' });
+      changed++;
+
+      logger.info({ remediation: r.id, pr: number, state: pr.state }, 'pull request outcome recorded');
+      if (pr.state === 'merged') {
+        await this.github.comment(
+          r.issueNumber,
+          `### 🚢 Shipped\n\nPull request ${pr.url} was merged. This remediation is complete end to end.`,
+        );
+      }
+    }
+    return changed;
+  }
+
+  /**
+   * Poll CI for the branches we own, and feed any new verdict into the loop.
+   *
+   * The `workflow_run` webhook does the same job with less latency, but only
+   * where GitHub can reach this service. Requiring a public tunnel to have a
+   * working review-fix loop would make the most valuable behaviour in the
+   * system the one that only works in a particular deployment, so the poll is
+   * the floor and the webhook is the optimisation.
+   *
+   * Keyed on run id, not status: two consecutive failures both read `failed`,
+   * and telling them apart is the difference between a second correction and
+   * an infinite resend of the first.
+   */
+  async syncCiStatus(): Promise<number> {
+    if (!this.github.enabled) return 0;
+    let handled = 0;
+
+    for (const r of this.store.listAwaitingPullRequestOutcome()) {
+      const branch = this.branchOf(r);
+      if (!branch) continue;
+
+      const run = await this.github.latestWorkflowRun(branch);
+      if (!run || run.status !== 'completed' || !run.conclusion) continue;
+      if (run.id === r.ciRunId) continue; // already accounted for
+      // Cancelled and skipped runs are not verdicts on the change.
+      if (run.conclusion !== 'success' && run.conclusion !== 'failure') continue;
+
+      await this.handleCiResult({
+        branch,
+        conclusion: run.conclusion,
+        runId: run.id,
+        runUrl: run.htmlUrl,
+        prUrl: r.prUrl,
+      });
+      handled++;
+    }
+    return handled;
+  }
+
+  /**
+   * The branch a remediation owns. Reconstructed from the contract and issue
+   * rather than stored, because it is the same deterministic name the prompt
+   * told Devin to use — one definition, in `branchFor`.
+   */
+  private branchOf(r: Remediation): string | null {
+    if (!r.contractId) return null;
+    return `autopilot/${r.contractId.toLowerCase()}-issue-${r.issueNumber}`;
+  }
+
+  /** Webhook path for the same information, so a merge shows up immediately. */
+  recordPullRequestEvent(input: {
+    url: string;
+    state: PullRequestState;
+    mergedAt: string | null;
+    branch: string;
+  }): Remediation | null {
+    const r = this.findByBranchOrPr(input.branch, input.url);
+    if (!r) return null;
+    const updated = this.store.recordPullRequest(r.id, {
+      url: input.url,
+      state: input.state,
+      mergedAt: input.mergedAt,
+    });
+    metrics.pullRequests.inc({ state: input.state, category: r.category ?? 'unknown' });
+    return updated;
+  }
+
+  // -------------------------------------------------------------------------
   // Reconcile
   // -------------------------------------------------------------------------
 
@@ -348,25 +721,66 @@ export class Orchestrator {
   private async reconcileOne(r: Remediation): Promise<void> {
     const log = logger.child({ remediation: r.id, issue: r.issueNumber, session: r.devinSessionId });
 
-    // A session that outlives the timeout is failed here rather than left to
-    // sit in `running` forever. An orchestrator that cannot time out is an
-    // orchestrator that silently leaks work.
-    const ageMs = Date.now() - new Date(r.createdAt).getTime();
-    if (ageMs > config.SESSION_TIMEOUT_MS) {
-      log.warn({ ageMs }, 'remediation timed out');
-      await this.finish(r, 'timed_out', { error: `exceeded ${config.SESSION_TIMEOUT_MS}ms` });
-      try {
-        await this.devin.terminateSession(r.devinSessionId!);
-      } catch {
-        // Best effort — the remediation is already recorded as timed out.
-      }
-      return;
-    }
-
     // Normalised by the client, so this switch is identical for v1 and v3.
     const session = await this.devin.getSession(r.devinSessionId!);
     const acu = session.acuUsed ?? undefined;
     const output = session.structuredOutput;
+
+    /**
+     * Record the pull request the moment it exists, whatever state the session
+     * is in.
+     *
+     * A session does not have to be finished to have delivered. The common
+     * shape is the opposite: Devin opens the PR, then stops to ask whether
+     * anything else is wanted, and sits in `blocked` — with merge-ready work
+     * already on the board. Waiting for a terminal state to notice that leaves
+     * the PR invisible to the dashboard, missing from merge rate, and, worst,
+     * invisible to the dedup gate, which is what lets the scanner dispatch a
+     * second paid session for work that is already done.
+     */
+    if (session.pullRequestUrl && !r.prUrl) {
+      this.store.recordPullRequest(r.id, { url: session.pullRequestUrl, state: 'open' });
+      metrics.pullRequests.inc({ state: 'open', category: r.category ?? 'unknown' });
+      log.info({ prUrl: session.pullRequestUrl, state: r.state }, 'pull request opened by session');
+    }
+
+    /**
+     * The timeout is checked *after* asking what the session actually did.
+     *
+     * The obvious order — clock first, then state — is wrong, and wrong in the
+     * expensive direction. A Devin session does not exit the moment it opens a
+     * pull request; it can sit idle afterwards. Checking the clock first
+     * therefore lets the reconciler kill a session that already delivered,
+     * record it as `timed_out`, and hand a retry a second paid session for work
+     * that was already done. That is exactly what happened to remediations 1
+     * and 2 of this deployment: two merge-ready pull requests recorded as
+     * timeouts, and two duplicate sessions opened behind them.
+     *
+     * So evidence outranks the clock: if the work exists, judge it. The timeout
+     * still exists for its real purpose, which is a session that produced
+     * nothing and will not stop on its own.
+     */
+    const ageMs = Date.now() - new Date(r.createdAt).getTime();
+    if (ageMs > config.SESSION_TIMEOUT_MS && session.state !== 'finished') {
+      const verdict = this.judge(output, session.pullRequestUrl);
+      const delivered = Boolean(verdict.prUrl);
+
+      log.warn({ ageMs, delivered }, 'remediation exceeded its time budget');
+      await this.finish(r, delivered ? verdict.state : 'timed_out', {
+        prUrl: verdict.prUrl ?? undefined,
+        structuredOutput: output ?? undefined,
+        acuUsed: acu,
+        error: delivered
+          ? `session outlived ${config.SESSION_TIMEOUT_MS}ms but had already opened a pull request`
+          : `exceeded ${config.SESSION_TIMEOUT_MS}ms`,
+      });
+      try {
+        await this.devin.terminateSession(r.devinSessionId!);
+      } catch {
+        // Best effort — the remediation is already recorded either way.
+      }
+      return;
+    }
 
     switch (session.state) {
       case 'finished': {
@@ -465,7 +879,14 @@ export class Orchestrator {
       error?: string | null;
     },
   ): Promise<void> {
-    const updated = this.store.transition(r.id, state, patch);
+    let updated = this.store.transition(r.id, state, patch);
+
+    // Stamp when the pull request first existed. Time-to-fix ends here, not at
+    // whatever the reconciler happened to notice afterwards.
+    if (patch.prUrl && !updated.prOpenedAt) {
+      updated = this.store.recordPullRequest(r.id, { url: patch.prUrl, state: 'open' });
+      metrics.pullRequests.inc({ state: 'open', category: r.category ?? 'unknown' });
+    }
 
     const category = r.category ?? 'unknown';
     const severity = r.severity ?? 'unknown';
@@ -533,6 +954,9 @@ export class Orchestrator {
     this.ticking = true;
     try {
       await this.reconcile();
+      await this.adoptOrphanedPullRequests();
+      await this.syncPullRequests();
+      await this.syncCiStatus();
       await this.dispatch();
       metrics.reconcilerRuns.inc({ result: 'ok' });
     } catch (err) {

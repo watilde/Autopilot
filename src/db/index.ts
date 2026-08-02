@@ -1,7 +1,13 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { AutopilotEvent, Remediation, RemediationState } from '../types.js';
+import type {
+  AutopilotEvent,
+  CiStatus,
+  PullRequestState,
+  Remediation,
+  RemediationState,
+} from '../types.js';
 
 /**
  * Persistence is deliberately boring: one SQLite file, no ORM.
@@ -27,6 +33,11 @@ CREATE TABLE IF NOT EXISTS remediations (
   devin_session_id   TEXT,
   devin_session_url  TEXT,
   pr_url             TEXT,
+  pr_state           TEXT,
+  pr_opened_at       TEXT,
+  pr_merged_at       TEXT,
+  ci_status          TEXT,
+  reworks            INTEGER NOT NULL DEFAULT 0,
   structured_output  TEXT,
   attempt            INTEGER NOT NULL DEFAULT 1,
   error              TEXT,
@@ -66,6 +77,23 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 );
 `;
 
+/**
+ * Columns added after the first deployment. `CREATE TABLE IF NOT EXISTS` does
+ * nothing to a table that already exists, so a database written by an earlier
+ * build needs these added explicitly — otherwise the demo database has to be
+ * thrown away to pick up a new field, and throwing away the audit trail to get
+ * a schema change is not a trade this system should ever make.
+ */
+const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
+  ['remediations', 'pr_state', 'TEXT'],
+  ['remediations', 'pr_opened_at', 'TEXT'],
+  ['remediations', 'pr_merged_at', 'TEXT'],
+  ['remediations', 'ci_status', 'TEXT'],
+  ['remediations', 'reworks', 'INTEGER NOT NULL DEFAULT 0'],
+  ['remediations', 'pr_checked_at', 'TEXT'],
+  ['remediations', 'ci_run_id', 'INTEGER'],
+];
+
 type Row = Record<string, unknown>;
 
 const nowIso = () => new Date().toISOString();
@@ -84,6 +112,12 @@ function toRemediation(r: Row): Remediation {
     devinSessionId: (r.devin_session_id as string) ?? null,
     devinSessionUrl: (r.devin_session_url as string) ?? null,
     prUrl: (r.pr_url as string) ?? null,
+    prState: (r.pr_state as Remediation['prState']) ?? null,
+    prOpenedAt: (r.pr_opened_at as string) ?? null,
+    prMergedAt: (r.pr_merged_at as string) ?? null,
+    ciStatus: (r.ci_status as Remediation['ciStatus']) ?? null,
+    ciRunId: (r.ci_run_id as number) ?? null,
+    reworks: (r.reworks as number) ?? 0,
     structuredOutput: r.structured_output ? safeParse(r.structured_output as string) : null,
     attempt: r.attempt as number,
     error: (r.error as string) ?? null,
@@ -113,6 +147,16 @@ export class Store {
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec('PRAGMA foreign_keys = ON;');
     this.db.exec(SCHEMA);
+    this.migrate();
+  }
+
+  private migrate(): void {
+    for (const [table, column, ddl] of ADDED_COLUMNS) {
+      const present = (this.db.prepare(`PRAGMA table_info(${table})`).all() as Row[]).some(
+        (c) => c.name === column,
+      );
+      if (!present) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+    }
   }
 
   close(): void {
@@ -149,6 +193,29 @@ export class Store {
         `SELECT * FROM remediations
           WHERE repo = ? AND issue_number = ?
             AND state NOT IN ('succeeded','failed','timed_out','cancelled')
+          ORDER BY attempt DESC LIMIT 1`,
+      )
+      .get(repo, issueNumber) as Row | undefined;
+    return row ? toRemediation(row) : null;
+  }
+
+  /**
+   * Any attempt on this issue that produced a pull request still in play.
+   *
+   * Deliberately not "the latest attempt" — that is the bug this replaced. The
+   * attempt that opened the PR is often *not* the newest row: a later attempt
+   * that was cancelled, or that correctly declined to open a duplicate, sits
+   * on top of it. Asking only the newest row therefore reports "no pull
+   * request" for an issue that demonstrably has one, and the scanner
+   * re-dispatches it every sweep.
+   */
+  findLivePullRequestForIssue(repo: string, issueNumber: number): Remediation | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM remediations
+          WHERE repo = ? AND issue_number = ?
+            AND pr_url IS NOT NULL AND pr_url != ''
+            AND (pr_state IS NULL OR pr_state != 'closed')
           ORDER BY attempt DESC LIMIT 1`,
       )
       .get(repo, issueNumber) as Row | undefined;
@@ -293,6 +360,142 @@ export class Store {
       detail,
     });
     return this.get(id)!;
+  }
+
+  /**
+   * Record what GitHub says about the pull request.
+   *
+   * Deliberately not a state transition: whether the PR was merged is a fact
+   * about the organisation's response, not about the remediation's own
+   * lifecycle, and conflating the two is how "the agent finished" turns into
+   * "the fix shipped" on a dashboard.
+   *
+   * `pr_opened_at` is written once and never revised — it is the endpoint of
+   * time-to-fix, and a later event must not be allowed to move it.
+   */
+  recordPullRequest(
+    id: number,
+    pr: { url?: string; state: PullRequestState; mergedAt?: string | null },
+  ): Remediation {
+    const current = this.get(id);
+    if (!current) throw new Error(`remediation ${id} not found`);
+    const ts = nowIso();
+
+    const sets = ['pr_state = ?', 'updated_at = ?'];
+    const args: unknown[] = [pr.state, ts];
+
+    if (pr.url) {
+      sets.push('pr_url = ?');
+      args.push(pr.url);
+    }
+    if (!current.prOpenedAt) {
+      sets.push('pr_opened_at = ?');
+      args.push(ts);
+    }
+    if (pr.state === 'merged') {
+      sets.push('pr_merged_at = ?');
+      args.push(pr.mergedAt ?? ts);
+    }
+
+    args.push(id);
+    this.db.prepare(`UPDATE remediations SET ${sets.join(', ')} WHERE id = ?`).run(...(args as never[]));
+
+    if (current.prState !== pr.state) {
+      this.appendEvent({
+        remediationId: id,
+        issueNumber: current.issueNumber,
+        type: `pull_request.${pr.state}`,
+        detail: { url: pr.url ?? current.prUrl, from: current.prState },
+      });
+    }
+    return this.get(id)!;
+  }
+
+  /**
+   * Record the PR's own CI verdict — the check Autopilot does not control.
+   *
+   * The run id is stored alongside the status because the status alone cannot
+   * answer "is this a new result?". Two consecutive failing runs both read
+   * `failed`, and without the id the poller either re-sends the first failure
+   * forever or misses the second one.
+   */
+  recordCi(id: number, status: CiStatus, detail: unknown = {}, runId?: number | null): Remediation {
+    const current = this.get(id);
+    if (!current) throw new Error(`remediation ${id} not found`);
+    this.db
+      .prepare('UPDATE remediations SET ci_status = ?, ci_run_id = ?, updated_at = ? WHERE id = ?')
+      .run(status, runId ?? current.ciRunId ?? null, nowIso(), id);
+    this.appendEvent({
+      remediationId: id,
+      issueNumber: current.issueNumber,
+      type: `ci.${status}`,
+      detail,
+    });
+    return this.get(id)!;
+  }
+
+  /** Count a CI-driven self-correction, and return the new total. */
+  incrementReworks(id: number): number {
+    this.db
+      .prepare('UPDATE remediations SET reworks = reworks + 1, updated_at = ? WHERE id = ?')
+      .run(nowIso(), id);
+    return this.get(id)?.reworks ?? 0;
+  }
+
+  /**
+   * Remediations whose pull request has not yet reached a resting place.
+   *
+   * The reconciler polls these so merge rate stays correct even when no
+   * webhook is configured — a demo without a public tunnel should still
+   * produce honest numbers.
+   */
+  listAwaitingPullRequestOutcome(): Remediation[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM remediations
+          WHERE pr_url IS NOT NULL AND pr_url != ''
+            AND (pr_state IS NULL OR pr_state = 'open')
+          ORDER BY updated_at ASC`,
+      )
+      .all() as Row[];
+    return rows.map(toRemediation);
+  }
+
+  /**
+   * Finished remediations that have a session but no pull request recorded.
+   *
+   * Two things live in here: genuine no-change outcomes, and work whose PR we
+   * failed to record. Only the provider can tell them apart, which is why this
+   * is a list to go and ask about rather than a number to report.
+   *
+   * Each row is offered once — `pr_checked_at` is stamped whether or not a PR
+   * turned up. A finished session's output does not change, so re-asking every
+   * tick would be a standing API call per historical remediation, forever.
+   */
+  listTerminalWithoutPullRequest(): Remediation[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM remediations
+          WHERE state IN ('succeeded','failed','timed_out')
+            AND devin_session_id IS NOT NULL
+            AND (pr_url IS NULL OR pr_url = '')
+            AND pr_checked_at IS NULL
+          ORDER BY updated_at DESC`,
+      )
+      .all() as Row[];
+    return rows.map(toRemediation);
+  }
+
+  markPullRequestChecked(id: number): void {
+    this.db.prepare('UPDATE remediations SET pr_checked_at = ? WHERE id = ?').run(nowIso(), id);
+  }
+
+  /** Find the remediation that owns a pull request, newest attempt first. */
+  findByPullRequest(url: string): Remediation | null {
+    const row = this.db
+      .prepare('SELECT * FROM remediations WHERE pr_url = ? ORDER BY attempt DESC LIMIT 1')
+      .get(url) as Row | undefined;
+    return row ? toRemediation(row) : null;
   }
 
   listByState(states: RemediationState[]): Remediation[] {

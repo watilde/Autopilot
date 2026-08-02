@@ -46,6 +46,7 @@ export class DevinV1Client implements DevinClient {
       prompt: input.prompt,
       title: input.title,
       tags: input.tags,
+      playbook_id: input.playbookId,
       idempotent: input.idempotent ?? true,
       max_acu_limit: input.maxAcuLimit,
       structured_output_schema: input.structuredOutputSchema,

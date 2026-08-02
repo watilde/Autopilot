@@ -76,6 +76,78 @@ describe('intake', () => {
     expect(retry.accepted).toBe(true);
     expect(retry.remediation?.attempt).toBe(2);
   });
+
+  /**
+   * The gap that cost this deployment two duplicate sessions: a finished
+   * remediation is terminal, but the issue stays open until its PR merges, so
+   * the periodic scanner saw fresh work every sweep.
+   */
+  it('refuses an issue whose fix is already open as a pull request', async () => {
+    const first = await h.orchestrator.intake(issue(), 'webhook');
+    h.store.transition(first.remediation!.id, 'succeeded', {
+      prUrl: 'https://github.com/watilde/superset/pull/6',
+    });
+    h.store.recordPullRequest(first.remediation!.id, { state: 'open' });
+
+    const again = await h.orchestrator.intake(issue(), 'scheduled-scan');
+    expect(again.accepted).toBe(false);
+    expect(again.reason).toMatch(/awaiting review/);
+    expect(h.store.listAll()).toHaveLength(1);
+  });
+
+  it('refuses an issue that was already fixed and merged', async () => {
+    const first = await h.orchestrator.intake(issue(), 'webhook');
+    h.store.transition(first.remediation!.id, 'succeeded', {
+      prUrl: 'https://github.com/watilde/superset/pull/6',
+    });
+    h.store.recordPullRequest(first.remediation!.id, { state: 'merged', mergedAt: null });
+
+    const again = await h.orchestrator.intake(issue(), 'scheduled-scan');
+    expect(again.accepted).toBe(false);
+    expect(again.reason).toMatch(/merged/);
+  });
+
+  /**
+   * The refinement that actually stopped the bleeding: the attempt holding the
+   * pull request is usually not the newest row, because a cancelled duplicate
+   * sits on top of it.
+   */
+  it('finds the pull request even when a later attempt was cancelled', async () => {
+    const first = await h.orchestrator.intake(issue(), 'webhook');
+    h.store.transition(first.remediation!.id, 'succeeded', {
+      prUrl: 'https://github.com/watilde/superset/pull/6',
+    });
+    h.store.recordPullRequest(first.remediation!.id, { state: 'open' });
+
+    // A duplicate that was dispatched and then stopped, leaving no PR of its own.
+    const dup = h.store.create({
+      repo: 'watilde/superset',
+      issueNumber: issue().number,
+      issueUrl: '',
+      title: 't',
+      contractId: 'SEC-001',
+      category: 'security',
+      severity: 'high',
+      triggeredBy: 'scheduled-scan',
+    });
+    h.store.transition(dup.id, 'cancelled', { error: 'duplicate' });
+
+    const again = await h.orchestrator.intake(issue(), 'scheduled-scan');
+    expect(again.accepted).toBe(false);
+    expect(again.reason).toMatch(/awaiting review/);
+  });
+
+  /** A PR that was closed unmerged is not a fix, so the work is live again. */
+  it('allows a retry after the pull request was closed without merging', async () => {
+    const first = await h.orchestrator.intake(issue(), 'webhook');
+    h.store.transition(first.remediation!.id, 'succeeded', {
+      prUrl: 'https://github.com/watilde/superset/pull/6',
+    });
+    h.store.recordPullRequest(first.remediation!.id, { state: 'closed' });
+
+    const again = await h.orchestrator.intake(issue(), 'comment:retry');
+    expect(again.accepted).toBe(true);
+  });
 });
 
 describe('dispatch', () => {
@@ -89,6 +161,36 @@ describe('dispatch', () => {
     expect(r.state).toBe('running');
     expect(r.devinSessionId).toBeTruthy();
     expect(r.devinSessionUrl).toContain('devin.ai');
+  });
+
+  /**
+   * Defence in depth: a queued remediation can outlive the state it was
+   * accepted in, and the queue is the last place to catch that before a
+   * session is paid for.
+   */
+  it('cancels a queued remediation whose issue got a pull request meanwhile', async () => {
+    const h = harness();
+    const first = await h.orchestrator.intake(issue(), 'webhook');
+    // A sibling attempt, queued behind it, from before the intake gate existed.
+    const stale = h.store.create({
+      repo: 'watilde/superset',
+      issueNumber: issue().number,
+      issueUrl: '',
+      title: 'duplicate',
+      contractId: 'SEC-001',
+      category: 'security',
+      severity: 'high',
+      triggeredBy: 'scheduled-scan',
+    });
+    h.store.transition(first.remediation!.id, 'succeeded', {
+      prUrl: 'https://github.com/watilde/superset/pull/6',
+    });
+    h.store.recordPullRequest(first.remediation!.id, { state: 'open' });
+
+    expect(await h.orchestrator.dispatch()).toBe(0);
+    const after = h.store.get(stale.id)!;
+    expect(after.state).toBe('cancelled');
+    expect(after.error).toMatch(/superseded/);
   });
 
   it('respects the concurrency cap', async () => {
@@ -155,6 +257,26 @@ describe('reconcile', () => {
     expect(r.error).toMatch(/exit\/error/);
   });
 
+  /**
+   * The common shape in practice: Devin opens the PR, then stops to ask
+   * whether anything else is wanted. The work is on the board while the
+   * session is still non-terminal, and the dedup gate depends on seeing it.
+   */
+  it('records a pull request from a session that is still in flight', async () => {
+    const h = harness(new DevinMockClient({ pollsUntilTerminal: 1, forceOutcome: 'pr_then_idle' }));
+    await h.orchestrator.intake(issue(), 'test');
+    await h.orchestrator.dispatch();
+    await h.orchestrator.reconcile();
+    await h.orchestrator.reconcile();
+
+    const r = h.store.listAll()[0]!;
+    expect(r.state).toBe('running'); // not finished — and that is fine
+    expect(r.prUrl).toContain('/pull/');
+    expect(r.prState).toBe('open');
+    // And the gate can now see it, which is the point.
+    expect(h.store.findLivePullRequestForIssue(r.repo, r.issueNumber)?.id).toBe(r.id);
+  });
+
   it('surfaces a blocked session without terminating it', async () => {
     const h = harness(new DevinMockClient({ pollsUntilTerminal: 1, forceOutcome: 'blocked' }));
     await h.orchestrator.intake(issue(), 'test');
@@ -165,6 +287,82 @@ describe('reconcile', () => {
     const r = h.store.listAll()[0]!;
     expect(r.state).toBe('blocked');
     expect(r.completedAt).toBeNull();
+  });
+});
+
+/**
+ * Both of these are regressions, not hypotheticals: they cost this deployment
+ * two merge-ready pull requests, which were recorded as timeouts and then
+ * re-dispatched as duplicate paid sessions.
+ */
+describe('evidence outranks the clock', () => {
+  /** A session that opened a PR and then idled past the budget still delivered. */
+  it('records a timed-out session that had already opened a PR as succeeded', async () => {
+    const h = harness(new DevinMockClient({ pollsUntilTerminal: 1, forceOutcome: 'pr_then_idle' }));
+    await h.orchestrator.intake(issue(), 'test');
+    await h.orchestrator.dispatch();
+    await h.orchestrator.reconcile();
+
+    // Backdate past SESSION_TIMEOUT_MS so the next pass is over budget.
+    const r = h.store.listAll()[0]!;
+    h.store.query(
+      `UPDATE remediations SET created_at = '2000-01-01T00:00:00.000Z' WHERE id = ${r.id}`,
+    );
+    await h.orchestrator.reconcile();
+
+    const after = h.store.get(r.id)!;
+    expect(after.state).toBe('succeeded');
+    expect(after.prUrl).toContain('/pull/');
+    // The overrun is still recorded — it just is not allowed to erase the work.
+    expect(after.error).toMatch(/outlived/);
+  });
+
+  it('still times out a session that produced nothing', async () => {
+    const h = harness(new DevinMockClient({ pollsUntilTerminal: 99 }));
+    await h.orchestrator.intake(issue(), 'test');
+    await h.orchestrator.dispatch();
+
+    const r = h.store.listAll()[0]!;
+    h.store.query(
+      `UPDATE remediations SET created_at = '2000-01-01T00:00:00.000Z' WHERE id = ${r.id}`,
+    );
+    await h.orchestrator.reconcile();
+
+    const after = h.store.get(r.id)!;
+    expect(after.state).toBe('timed_out');
+    expect(after.prUrl).toBeNull();
+  });
+
+  it('adopts a pull request the session opened but we never recorded', async () => {
+    const h = harness(new DevinMockClient({ pollsUntilTerminal: 1, forceOutcome: 'fixed' }));
+    await h.orchestrator.intake(issue(), 'test');
+    await h.orchestrator.dispatch();
+    await h.orchestrator.reconcile();
+    await h.orchestrator.reconcile();
+
+    // Simulate the record we would have been left with had the reconciler
+    // killed the session before it exited.
+    const r = h.store.listAll()[0]!;
+    h.store.query(
+      `UPDATE remediations SET state = 'timed_out', pr_url = NULL, pr_state = NULL WHERE id = ${r.id}`,
+    );
+
+    expect(await h.orchestrator.adoptOrphanedPullRequests()).toBe(1);
+    const after = h.store.get(r.id)!;
+    expect(after.state).toBe('succeeded');
+    expect(after.prUrl).toContain('/pull/');
+  });
+
+  it('asks about each orphan once, not on every tick', async () => {
+    const h = harness(new DevinMockClient({ pollsUntilTerminal: 1, forceOutcome: 'finished_no_pr' }));
+    await h.orchestrator.intake(issue(), 'test');
+    await h.orchestrator.dispatch();
+    await h.orchestrator.reconcile();
+    await h.orchestrator.reconcile();
+
+    // A genuine no-change outcome: no PR to find, now or ever.
+    expect(await h.orchestrator.adoptOrphanedPullRequests()).toBe(0);
+    expect(h.store.listTerminalWithoutPullRequest()).toHaveLength(0);
   });
 });
 
@@ -234,5 +432,185 @@ describe('operator controls', () => {
     const h = harness();
     expect(await h.orchestrator.reply(9999, 'hello')).toBeNull();
     expect(await h.orchestrator.cancel(9999)).toBeNull();
+  });
+});
+
+/**
+ * The review-fix loop is the part of this system that a deterministic bot
+ * cannot have: when CI rejects the patch, the failure goes back to the agent
+ * that wrote it, with its original context, instead of to a human's queue.
+ *
+ * All of these drive a remediation to `succeeded` with a pull request first,
+ * because that is the only state a CI result can arrive in.
+ */
+describe('review-fix loop', () => {
+  async function shipped(devin = new DevinMockClient({ pollsUntilTerminal: 1, forceOutcome: 'fixed' })) {
+    const h = harness(devin);
+    await h.orchestrator.intake(issue(), 'test');
+    await h.orchestrator.dispatch();
+    await h.orchestrator.reconcile();
+    await h.orchestrator.reconcile();
+    const r = h.store.listAll()[0]!;
+    expect(r.state).toBe('succeeded');
+    return { ...h, remediation: r, branch: `autopilot/sec-001-issue-${r.issueNumber}` };
+  }
+
+  it('sends a CI failure back to the session and reopens the work', async () => {
+    const h = await shipped();
+
+    const result = await h.orchestrator.handleCiResult({
+      branch: h.branch,
+      conclusion: 'failure',
+      runId: 42,
+      runUrl: 'https://github.com/watilde/superset/actions/runs/42',
+    });
+
+    expect(result.handled).toBe(true);
+    const r = h.store.get(h.remediation.id)!;
+    expect(r.ciStatus).toBe('failed');
+    expect(r.reworks).toBe(1);
+    // Back out of terminal: CI rejected the patch, so the work is genuinely
+    // in flight again and the dashboard must not still be claiming success.
+    expect(r.state).toBe('running');
+
+    const sent = h.devin.messages.at(-1)!;
+    expect(sent.sessionId).toBe(r.devinSessionId);
+    expect(sent.message).toMatch(/CI failed/);
+    expect(sent.message).toContain(h.branch);
+    expect(sent.message).toContain('runs/42');
+  });
+
+  it('leaves a passing build alone', async () => {
+    const h = await shipped();
+
+    await h.orchestrator.handleCiResult({
+      branch: h.branch,
+      conclusion: 'success',
+      runId: 43,
+      runUrl: null,
+    });
+
+    const r = h.store.get(h.remediation.id)!;
+    expect(r.ciStatus).toBe('passed');
+    expect(r.state).toBe('succeeded');
+    expect(r.reworks).toBe(0);
+    expect(h.devin.messages).toHaveLength(0);
+  });
+
+  /**
+   * An agent that cannot fix its own build twice is stuck on something the
+   * contract did not anticipate. Looping past that point spends ACUs to learn
+   * nothing, so the cap escalates instead.
+   */
+  it('escalates to a human once the rework cap is reached', async () => {
+    const h = await shipped();
+    const fail = () =>
+      h.orchestrator.handleCiResult({
+        branch: h.branch,
+        conclusion: 'failure',
+        runId: 44,
+        runUrl: null,
+      });
+
+    await fail(); // rework 1
+    await fail(); // rework 2 — MAX_CI_REWORKS
+    const messagesBeforeCap = h.devin.messages.length;
+
+    const capped = await fail();
+    expect(capped.reason).toMatch(/escalated/);
+    // Nothing further is sent: the point of the cap is to stop spending.
+    expect(h.devin.messages).toHaveLength(messagesBeforeCap);
+    expect(h.store.get(h.remediation.id)!.reworks).toBe(2);
+  });
+
+  /**
+   * Two failing runs both read `failed`. Keying on the status alone would
+   * either resend the first failure forever or ignore the second one.
+   */
+  it('treats a second failing run as a new verdict', async () => {
+    const h = await shipped();
+    const fail = (runId: number) =>
+      h.orchestrator.handleCiResult({
+        branch: h.branch,
+        conclusion: 'failure',
+        runId,
+        runUrl: `https://github.com/watilde/superset/actions/runs/${runId}`,
+      });
+
+    await fail(101);
+    expect(h.store.get(h.remediation.id)!.ciRunId).toBe(101);
+
+    await fail(102);
+    const r = h.store.get(h.remediation.id)!;
+    expect(r.ciRunId).toBe(102);
+    expect(r.reworks).toBe(2);
+    expect(h.devin.messages).toHaveLength(2);
+  });
+
+  it('ignores CI on a branch it does not own', async () => {
+    const h = await shipped();
+    const result = await h.orchestrator.handleCiResult({
+      branch: 'feature/someone-elses-work',
+      conclusion: 'failure',
+      runId: 45,
+      runUrl: null,
+    });
+    expect(result.handled).toBe(false);
+    expect(h.devin.messages).toHaveLength(0);
+  });
+});
+
+/**
+ * Opening a pull request is output; merging one is outcome. These are tracked
+ * separately so the dashboard cannot report the first as though it were the
+ * second.
+ */
+describe('pull request outcomes', () => {
+  it('stamps when the pull request first appeared', async () => {
+    const h = harness();
+    await h.orchestrator.intake(issue(), 'test');
+    await h.orchestrator.dispatch();
+    await h.orchestrator.reconcile();
+    await h.orchestrator.reconcile();
+
+    const r = h.store.listAll()[0]!;
+    expect(r.prOpenedAt).toBeTruthy();
+    expect(r.prState).toBe('open');
+    expect(r.prMergedAt).toBeNull();
+  });
+
+  it('records a merge from a webhook and holds the opened-at stamp', async () => {
+    const h = harness();
+    await h.orchestrator.intake(issue(), 'test');
+    await h.orchestrator.dispatch();
+    await h.orchestrator.reconcile();
+    await h.orchestrator.reconcile();
+    const before = h.store.listAll()[0]!;
+
+    const updated = h.orchestrator.recordPullRequestEvent({
+      url: before.prUrl!,
+      state: 'merged',
+      mergedAt: '2026-01-01T00:00:00.000Z',
+      branch: `autopilot/sec-001-issue-${before.issueNumber}`,
+    });
+
+    expect(updated?.prState).toBe('merged');
+    expect(updated?.prMergedAt).toBe('2026-01-01T00:00:00.000Z');
+    // Time-to-fix ends when the PR opened; a later merge must not move it.
+    expect(updated?.prOpenedAt).toBe(before.prOpenedAt);
+    expect(h.store.listEvents().some((e) => e.type === 'pull_request.merged')).toBe(true);
+  });
+
+  it('ignores a pull request from a branch it does not own', async () => {
+    const h = harness();
+    await h.orchestrator.intake(issue(), 'test');
+    expect(
+      h.orchestrator.recordPullRequestEvent({
+        url: 'https://github.com/watilde/superset/pull/999',
+        state: 'merged',
+        mergedAt: null,
+        branch: 'dependabot/npm_and_yarn/lodash',
+      }),
+    ).toBeNull();
   });
 });

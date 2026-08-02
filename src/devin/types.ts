@@ -28,6 +28,14 @@ export interface CreateSessionInput {
   maxAcuLimit?: number;
   /** JSON Schema Devin must populate, so results are data rather than prose. */
   structuredOutputSchema?: Record<string, unknown>;
+  /**
+   * Playbook to run the session under. A playbook is the standing procedure —
+   * how to branch, when to stop, what to put in the PR description — which is
+   * the half of the instructions that is identical for every remediation. Held
+   * on Devin's side so it can be revised without redeploying the orchestrator,
+   * and so the per-issue prompt stays about the issue.
+   */
+  playbookId?: string;
   /** v1 only; v3 has no equivalent field. Ignored by the v3 client. */
   idempotent?: boolean;
 }
@@ -59,6 +67,66 @@ export interface DevinClient {
   getSession(sessionId: string): Promise<NormalizedSession>;
   sendMessage(sessionId: string, message: string): Promise<void>;
   terminateSession(sessionId: string): Promise<void>;
+}
+
+/**
+ * A session as Devin's own analytics API reports it.
+ *
+ * Worth pulling even though Autopilot already records most of it: these are
+ * the numbers on Devin's side of the boundary. If they disagree with ours,
+ * one of the two is wrong, and a dashboard that can only see its own bookkeeping
+ * has no way to find that out.
+ */
+export interface DevinSessionInsight {
+  sessionId: string;
+  url: string | null;
+  title: string | null;
+  status: string;
+  statusDetail: string | null;
+  tags: string[];
+  playbookId: string | null;
+  acusConsumed: number | null;
+  pullRequests: Array<{ url: string; state: string }>;
+  createdAt: string | null;
+}
+
+export interface DevinSchedule {
+  scheduleId: string;
+  name: string;
+  frequency: string | null;
+  enabled: boolean;
+  lastExecutedAt: string | null;
+}
+
+/**
+ * Platform features that exist only on the current API generation: the
+ * analytics view, playbooks, and scheduled sessions. Kept off `DevinClient` so
+ * the orchestrator's core path stays implementable by the mock and by v1 —
+ * callers ask for these explicitly, via `supportsPlatformApi`.
+ */
+export interface DevinPlatformApi {
+  listSessionInsights(limit?: number): Promise<DevinSessionInsight[]>;
+  createPlaybook(input: {
+    title: string;
+    body: string;
+    structuredOutputSchema?: Record<string, unknown>;
+  }): Promise<{ playbookId: string; title: string }>;
+  listSchedules(): Promise<DevinSchedule[]>;
+  createSchedule(input: {
+    name: string;
+    prompt: string;
+    /** Cron, e.g. `0 9 * * 1` for Monday morning. */
+    frequency: string;
+    playbookId?: string;
+    tags?: string[];
+  }): Promise<DevinSchedule>;
+  deleteSchedule(scheduleId: string): Promise<void>;
+}
+
+export function supportsPlatformApi(
+  client: DevinClient,
+): client is DevinClient & DevinPlatformApi {
+  return typeof (client as Partial<DevinPlatformApi>).listSessionInsights === 'function';
 }
 
 export class DevinApiError extends Error {

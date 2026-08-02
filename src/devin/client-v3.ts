@@ -4,6 +4,9 @@ import type {
   CreateSessionInput,
   CreateSessionResult,
   DevinClient,
+  DevinPlatformApi,
+  DevinSchedule,
+  DevinSessionInsight,
   DevinSessionState,
   NormalizedSession,
 } from './types.js';
@@ -87,7 +90,35 @@ export interface DevinV3ClientOptions extends DevinHttpOptions {
  * of every path, and lifecycle is split across `status` and `status_detail` —
  * so "did it finish successfully" needs both fields, not one.
  */
-export class DevinV3Client implements DevinClient {
+interface V3InsightItem {
+  session_id: string;
+  url?: string | null;
+  title?: string | null;
+  status?: string | null;
+  status_detail?: string | null;
+  tags?: string[] | null;
+  playbook_id?: string | null;
+  acus_consumed?: number | null;
+  pull_requests?: Array<{ pr_url?: string | null; pr_state?: string | null }> | null;
+  created_at?: number | string | null;
+}
+
+interface V3ScheduleItem {
+  scheduled_session_id: string;
+  name?: string | null;
+  frequency?: string | null;
+  enabled?: boolean | null;
+  last_executed_at?: string | null;
+}
+
+/** Session timestamps come back as Unix seconds; the rest of the app uses ISO. */
+function toIso(value: number | string | null | undefined): string | null {
+  if (value == null) return null;
+  if (typeof value === 'number') return new Date(value * 1000).toISOString();
+  return value;
+}
+
+export class DevinV3Client implements DevinClient, DevinPlatformApi {
   readonly mode = 'live' as const;
   readonly apiVersion = 'v3' as const;
   private readonly http: DevinHttp;
@@ -110,6 +141,7 @@ export class DevinV3Client implements DevinClient {
       prompt: input.prompt,
       title: input.title,
       tags: input.tags,
+      playbook_id: input.playbookId,
       max_acu_limit: input.maxAcuLimit,
       structured_output_schema: input.structuredOutputSchema,
       structured_output_required: Boolean(input.structuredOutputSchema),
@@ -159,6 +191,101 @@ export class DevinV3Client implements DevinClient {
   async terminateSession(sessionId: string): Promise<void> {
     await this.http.request('DELETE', `${this.base()}/${encodeURIComponent(sessionId)}`);
   }
+
+  // --- platform features (v3 only) ------------------------------------------
+
+  /**
+   * Sessions as Devin's own analytics reports them.
+   *
+   * This is the independent view: same sessions, counted by the provider
+   * rather than by us. It is what lets the dashboard show that the tags and
+   * prompts Autopilot claims to have sent are the ones Devin actually received.
+   */
+  async listSessionInsights(limit = 50): Promise<DevinSessionInsight[]> {
+    const res = await this.http.request<{ items?: V3InsightItem[] }>(
+      'GET',
+      `/organizations/${encodeURIComponent(this.orgId)}/sessions/insights`,
+    );
+    return (res.items ?? []).slice(0, limit).map((s) => ({
+      sessionId: s.session_id,
+      url: s.url ?? null,
+      title: s.title ?? null,
+      status: String(s.status ?? ''),
+      statusDetail: s.status_detail ?? null,
+      tags: s.tags ?? [],
+      playbookId: s.playbook_id ?? null,
+      acusConsumed: typeof s.acus_consumed === 'number' ? s.acus_consumed : null,
+      pullRequests: (s.pull_requests ?? [])
+        .filter((p) => p?.pr_url)
+        .map((p) => ({ url: String(p.pr_url), state: String(p.pr_state ?? 'unknown') })),
+      createdAt: toIso(s.created_at),
+    }));
+  }
+
+  async createPlaybook(input: {
+    title: string;
+    body: string;
+    structuredOutputSchema?: Record<string, unknown>;
+  }): Promise<{ playbookId: string; title: string }> {
+    const res = await this.http.request<{ playbook_id: string; title: string }>(
+      'POST',
+      `/organizations/${encodeURIComponent(this.orgId)}/playbooks`,
+      {
+        title: input.title,
+        body: input.body,
+        structured_output_schema: input.structuredOutputSchema,
+      },
+    );
+    return { playbookId: res.playbook_id, title: res.title };
+  }
+
+  async listSchedules(): Promise<DevinSchedule[]> {
+    const res = await this.http.request<{ items?: V3ScheduleItem[] }>(
+      'GET',
+      `/organizations/${encodeURIComponent(this.orgId)}/schedules`,
+    );
+    return (res.items ?? []).map(toSchedule);
+  }
+
+  async createSchedule(input: {
+    name: string;
+    prompt: string;
+    frequency: string;
+    playbookId?: string;
+    tags?: string[];
+  }): Promise<DevinSchedule> {
+    const res = await this.http.request<V3ScheduleItem>(
+      'POST',
+      `/organizations/${encodeURIComponent(this.orgId)}/schedules`,
+      {
+        name: input.name,
+        prompt: input.prompt,
+        schedule_type: 'recurring',
+        frequency: input.frequency,
+        playbook_id: input.playbookId,
+        tags: input.tags,
+        notify_on: 'failure',
+      },
+    );
+    return toSchedule(res);
+  }
+
+  async deleteSchedule(scheduleId: string): Promise<void> {
+    await this.http.request(
+      'DELETE',
+      `/organizations/${encodeURIComponent(this.orgId)}/schedules/${encodeURIComponent(scheduleId)}`,
+    );
+  }
+}
+
+function toSchedule(s: V3ScheduleItem): DevinSchedule {
+  return {
+    scheduleId: s.scheduled_session_id,
+    name: s.name ?? '',
+    frequency: s.frequency ?? null,
+    enabled: s.enabled ?? true,
+    lastExecutedAt: s.last_executed_at ?? null,
+  };
 }
 
 export function normalizeV3(s: V3SessionResponse): NormalizedSession {
