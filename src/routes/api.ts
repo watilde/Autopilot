@@ -76,8 +76,8 @@ export function registerApiRoutes(
   });
 
   app.get('/api/events', async (req) => {
-    const { limit } = req.query as { limit?: string };
-    return { events: store.listEvents(Number(limit) || 100) };
+    const { limit, type } = req.query as { limit?: string; type?: string };
+    return { events: store.listEvents(Number(limit) || 100, type) };
   });
 
   /**

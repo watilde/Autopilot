@@ -74,6 +74,21 @@ export interface AnalyticsSnapshot {
    * than zero in that case.
    */
   acu: { total: number; reported: boolean; perPr: number | null; perMergedPr: number | null };
+  /**
+   * The work the system declined to do, and the merge it asked for but never
+   * recorded. Neither appears anywhere else here: a remediation that intake
+   * refused never becomes a row, so the most frequent decision the orchestrator
+   * makes is otherwise invisible — and a system that only reports what it did
+   * is not observable, it is advertising.
+   */
+  refusals: {
+    /** Intake declined the issue: already in flight, already fixed, already merged. */
+    deduplicated: number;
+    /** Merges asked for. Asking is not merging, and the agent can decline. */
+    mergeRequested: number;
+    /** Requested merges that never happened and were handed to a human. */
+    mergeEscalated: number;
+  };
   byState: StateCount[];
   byCategory: CategoryBreakdown[];
   bySeverity: StateCount[];
@@ -252,6 +267,19 @@ export function buildAnalytics(store: Store): AnalyticsSnapshot {
     `)
     .map((r) => ({ reason: String(r.reason), count: num(r.c) }));
 
+  // Refusals live in two places because they are two different decisions: an
+  // intake refusal is an event (there is no remediation to hang it on — that is
+  // the point), a merge escalation is a stamp on the row it concerns.
+  const deduplicated = num(
+    store.query(`SELECT COUNT(*) AS c FROM events WHERE type = 'intake.deduplicated'`)[0]?.c,
+  );
+  const mergeRow =
+    store.query(`
+      SELECT SUM(CASE WHEN merge_requested_at IS NOT NULL THEN 1 ELSE 0 END) AS requested,
+             SUM(CASE WHEN merge_escalated_at IS NOT NULL THEN 1 ELSE 0 END) AS escalated
+        FROM remediations
+    `)[0] ?? {};
+
   const triggers = store
     .query(
       `SELECT triggered_by AS t, COUNT(*) AS c FROM remediations GROUP BY triggered_by ORDER BY c DESC`,
@@ -295,6 +323,11 @@ export function buildAnalytics(store: Store): AnalyticsSnapshot {
       reported: acuTotal > 0,
       perPr: acuTotal > 0 && prsOpened > 0 ? acuTotal / prsOpened : null,
       perMergedPr: acuTotal > 0 && prsMerged > 0 ? acuTotal / prsMerged : null,
+    },
+    refusals: {
+      deduplicated,
+      mergeRequested: num(mergeRow.requested),
+      mergeEscalated: num(mergeRow.escalated),
     },
     byState,
     byCategory,

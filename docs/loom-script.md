@@ -110,14 +110,24 @@ Then what came back — open PR #8, or slide 4, which is the same body:
 > anything. That is not this session being thorough. The playbook makes it
 > mandatory: the body carries what was run and what it printed."
 
-Then the dashboard:
+Then the dashboard. Scroll it; the top row is the least interesting part.
 
 > "Merge rate, not PR count. An unmerged PR is work the organisation declined.
-> Time-to-PR separately from time-to-merge, because the second one is human
+> Issue-to-PR separately from PR-to-merged, because the second one is human
 > review latency and summing them lets a slow reviewer make the agent look slow.
 > And ACUs are on there reading *not reported for this account* — the meter is
 > wired, this account does not return the figure, and 'not measured' and 'free'
-> are different claims."
+> are different claims.
+>
+> Then the two sections underneath, which is where I'd actually look. **What
+> Devin claimed, next to what CI found** — including one it reported as
+> *blocked* that CI then passed, so the record says succeeded on the evidence
+> rather than on the report. And **what the system refused to do**: the intake
+> refusals, work never dispatched and never paid for, which is the number with
+> no row anywhere else.
+>
+> And at the bottom, the merge it asked for and never got, with the session's
+> refusal quoted in full. Nothing there is paraphrased."
 
 ---
 

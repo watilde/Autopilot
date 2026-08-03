@@ -248,4 +248,74 @@ describe('analytics', () => {
     expect(a.ci.failed).toBe(0); // superseded by the passing re-run
     expect(a.ci.reworks).toBe(1);
   });
+
+  /**
+   * The refusals are the decisions with no row of their own. An issue intake
+   * declined never becomes a remediation — that is the whole point of declining
+   * it — so unless the event is counted here, the most frequent thing the
+   * orchestrator does is invisible on every surface that reads this snapshot.
+   */
+  describe('refusals', () => {
+    it('counts intake refusals, which produce no remediation at all', () => {
+      const { store } = seed();
+      expect(buildAnalytics(store).refusals.deduplicated).toBe(0);
+
+      store.appendEvent({ issueNumber: 9, type: 'intake.deduplicated', detail: { reason: 'running' } });
+      store.appendEvent({ issueNumber: 9, type: 'intake.deduplicated', detail: { reason: 'running' } });
+      store.appendEvent({ issueNumber: 9, type: 'remediation.created', detail: {} });
+
+      const a = buildAnalytics(store);
+      expect(a.refusals.deduplicated).toBe(2);
+      // And it does not inflate anything that counts work actually done.
+      expect(a.totals.total).toBe(4);
+    });
+
+    /**
+     * Asking for a merge and observing one are different facts, and the gap
+     * between the two counts is the only place a refused merge shows up.
+     */
+    it('separates merges requested from merges escalated', () => {
+      const { store, ids } = seed();
+      expect(buildAnalytics(store).refusals.mergeRequested).toBe(0);
+
+      store.markMergeRequested(ids.a);
+      let a = buildAnalytics(store);
+      expect(a.refusals.mergeRequested).toBe(1);
+      expect(a.refusals.mergeEscalated).toBe(0);
+
+      store.markMergeEscalated(ids.a, 'my guardrail rejected it');
+      a = buildAnalytics(store);
+      expect(a.refusals.mergeRequested).toBe(1);
+      expect(a.refusals.mergeEscalated).toBe(1);
+      // Escalating is not merging: nothing here moved the merge count.
+      expect(a.totals.prsMerged).toBe(0);
+    });
+  });
+});
+
+/**
+ * The audit log is dominated by the rows nobody reads. A caller after the two
+ * escalations must not have to page through hundreds of intake refusals to
+ * reach them, so the filter has to be applied in SQL rather than after the
+ * LIMIT — otherwise the newest N rows are all deduplications and the answer is
+ * empty for the wrong reason.
+ */
+describe('event log filtering', () => {
+  it('filters by type before the limit, not after', () => {
+    const store = new Store(':memory:');
+    for (let i = 0; i < 30; i++) {
+      store.appendEvent({ issueNumber: 1, type: 'intake.deduplicated', detail: {} });
+    }
+    store.appendEvent({ issueNumber: 2, type: 'merge.escalated', detail: { reason: 'no path on my side' } });
+    for (let i = 0; i < 30; i++) {
+      store.appendEvent({ issueNumber: 1, type: 'intake.deduplicated', detail: {} });
+    }
+
+    // Unfiltered, the escalation is nowhere near the newest handful.
+    expect(store.listEvents(5).every((e) => e.type === 'intake.deduplicated')).toBe(true);
+
+    const escalations = store.listEvents(5, 'merge.escalated');
+    expect(escalations).toHaveLength(1);
+    expect((escalations[0].detail as { reason: string }).reason).toBe('no path on my side');
+  });
 });

@@ -621,10 +621,23 @@ export class Store {
       );
   }
 
-  listEvents(limit = 100): AutopilotEvent[] {
-    const rows = this.db
-      .prepare('SELECT * FROM events ORDER BY id DESC LIMIT ?')
-      .all(limit) as Row[];
+  /**
+   * The audit log, newest first.
+   *
+   * `type` filters because the log is dominated by the events nobody reads: an
+   * intake refusal is written every time the scanner declines to re-pay for
+   * work already in flight, which on a healthy system is most of the rows. A
+   * caller after the two escalations should not have to page through four
+   * hundred deduplications to find them.
+   */
+  listEvents(limit = 100, type?: string): AutopilotEvent[] {
+    const rows = (
+      type
+        ? this.db
+            .prepare('SELECT * FROM events WHERE type = ? ORDER BY id DESC LIMIT ?')
+            .all(type, limit)
+        : this.db.prepare('SELECT * FROM events ORDER BY id DESC LIMIT ?').all(limit)
+    ) as Row[];
     return rows.map((r) => ({
       id: r.id as number,
       remediationId: (r.remediation_id as number) ?? null,

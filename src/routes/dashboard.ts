@@ -9,6 +9,19 @@ import { config } from '../config.js';
  * lies. "Sessions started" can go up while nothing ships. Everything is fetched
  * from /api/analytics, so nothing shown here is computed twice.
  *
+ * Three sections exist to keep the page honest rather than to make it look
+ * good, and they are the ones worth defending:
+ *
+ *   - **Independent verification** puts what Devin claimed next to what the
+ *     pull request's own CI found. A dashboard that only repeats the agent's
+ *     self-report is the agent's press release.
+ *   - **What the system refused to do** counts the work never paid for and the
+ *     merge asked for but never observed. Those decisions produce no row
+ *     anywhere else, so without this the most frequent thing the orchestrator
+ *     does is invisible.
+ *   - **Escalations** quotes the session verbatim. Summarising a refusal would
+ *     be the dashboard inventing a reason.
+ *
  * Charts follow the house data-viz rules: single-hue bars for magnitude,
  * reserved status colors for state (never reused as a series), no pie charts,
  * no dual axes, tabular figures in tables only, and a selected dark mode
@@ -17,7 +30,10 @@ import { config } from '../config.js';
 export function registerDashboardRoutes(app: FastifyInstance): void {
   app.get('/', async (_req, reply) => {
     reply.header('Content-Type', 'text/html; charset=utf-8');
-    return PAGE.replace('__REPO__', `${config.GITHUB_OWNER}/${config.GITHUB_REPO}`).replace(
+    // replaceAll, not replace: __MODE__ appears twice — once as a class, once
+    // as the badge's text — and replacing only the first left the literal
+    // placeholder on screen next to a correctly coloured badge.
+    return PAGE.replaceAll('__REPO__', `${config.GITHUB_OWNER}/${config.GITHUB_REPO}`).replaceAll(
       '__MODE__',
       config.DEVIN_MODE,
     );
@@ -157,6 +173,47 @@ const PAGE = String.raw`<!doctype html>
   .empty { color: var(--muted); font-size: 13px; padding: 20px 0; text-align: center; }
   .foot { margin-top: 28px; font-size: 12px; color: var(--muted); }
   code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+
+  .lede { font-size: 13px; color: var(--muted); margin: 0 0 14px; max-width: 88ch; }
+  .lede strong { color: var(--text-secondary); font-weight: 600; }
+
+  /* --- verdict line: claimed vs independently checked ---------------------- */
+  .verdict { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px 22px; }
+  .verdict .n { font-size: 24px; font-weight: 650; letter-spacing: -0.02em; }
+  .verdict .k { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+  .verdict .why { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .verdict .n.ok { color: var(--success-text); }
+  .verdict .n.warn { color: var(--serious); }
+
+  /* --- escalations: the session's own words, never paraphrased ------------- */
+  .esc { border-left: 3px solid var(--warning); padding: 2px 0 2px 14px; margin: 0 0 16px; }
+  .esc:last-child { margin-bottom: 0; }
+  .esc .head { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+  .esc blockquote {
+    margin: 0; font-size: 13px; line-height: 1.55; color: var(--text-primary);
+    white-space: pre-wrap; font-family: inherit;
+  }
+  .esc code { background: color-mix(in srgb, var(--muted) 16%, transparent);
+              border-radius: 3px; padding: 1px 4px; }
+
+  /* --- evidence drawer: Devin's verification output, verbatim -------------- */
+  tbody tr.head-row { cursor: pointer; }
+  tbody tr.head-row td:first-child::before {
+    content: "▸"; color: var(--muted); font-size: 10px; margin-right: 6px;
+  }
+  tbody tr.head-row.open td:first-child::before { content: "▾"; }
+  tr.evidence > td { background: color-mix(in srgb, var(--series-1) 4%, transparent);
+                     padding: 14px 16px 16px; }
+  .ev-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px; margin-bottom: 10px; }
+  .ev-k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .ev-v { font-size: 13px; line-height: 1.5; }
+  pre.out {
+    margin: 0; padding: 10px 12px; border-radius: 6px; overflow-x: auto;
+    background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px; line-height: 1.5; color: var(--text-secondary);
+  }
+  .ev-note { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
 </style>
 </head>
 <body>
@@ -174,11 +231,40 @@ const PAGE = String.raw`<!doctype html>
   <h2>Outcomes</h2>
   <div class="kpis" id="kpis"></div>
 
+  <h2>Independent verification</h2>
+  <div class="card">
+    <p class="lede">
+      Devin runs the contract's <code>verify</code> block in its sandbox and reports the result.
+      A job on the pull request reads <strong>the same block off the same issue</strong> and runs
+      it again. One definition of done, checked by two parties — one of which has no stake in
+      the answer.
+    </p>
+    <div class="verdict" id="verify"></div>
+  </div>
+
+  <h2>What the system refused to do</h2>
+  <div class="card">
+    <p class="lede">
+      Decisions that produce no pull request and no row anywhere else. A system that reports
+      only what it did is not observable.
+    </p>
+    <div class="verdict" id="refusals"></div>
+  </div>
+
+  <h2>Escalated to a human</h2>
+  <div class="card" id="escalations"></div>
+
   <h2>Pipeline</h2>
   <div class="card"><div class="chips" id="chips"></div></div>
 
-  <h2>Throughput — completed per day</h2>
-  <div class="card">
+  <h2>By category</h2>
+  <div class="card"><div class="bars" id="cats"></div></div>
+
+  <h2>What started the work</h2>
+  <div class="card"><div class="bars" id="triggers"></div></div>
+
+  <h2 id="tp-h">Throughput — completed per day</h2>
+  <div class="card" id="tp-card">
     <div class="spark" id="spark"></div>
     <div class="spark-x" id="sparkx"></div>
     <p class="bar-val" style="text-align:left;margin:10px 0 0;color:var(--muted)">
@@ -186,11 +272,14 @@ const PAGE = String.raw`<!doctype html>
     </p>
   </div>
 
-  <h2>By category</h2>
-  <div class="card"><div class="bars" id="cats"></div></div>
-
   <h2>Remediations</h2>
-  <div class="card scroll"><table id="table">
+  <div class="card scroll">
+    <p class="lede">
+      Click a row for the evidence: what Devin changed, what it ran, and what those commands
+      printed — its own words, not this dashboard's summary of them.
+    </p>
+    <p class="lede" id="tbl-filter"></p>
+    <table id="table">
     <thead><tr>
       <th>Issue</th><th>Contract</th><th>State</th><th>Cycle</th>
       <th>Session</th><th>Pull request</th><th>CI</th>
@@ -212,8 +301,8 @@ const PAGE = String.raw`<!doctype html>
     </table>
   </div>
 
-  <h2>Why things failed</h2>
-  <div class="card"><div class="bars" id="fails"></div></div>
+  <h2 id="fails-h">Why things failed</h2>
+  <div class="card" id="fails-card"><div class="bars" id="fails"></div></div>
 
   <p class="foot">
     Auto-refreshes every 5s · <a href="/api/analytics">/api/analytics</a> ·
@@ -230,11 +319,39 @@ const dur = s => {
   return (s / 3600).toFixed(1) + "h";
 };
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+/** Cut on a word boundary — a title severed mid-word reads as a rendering bug. */
+const trim = (s, n) => {
+  s = String(s ?? "");
+  if (s.length <= n) return s;
+  const cut = s.slice(0, n);
+  const sp = cut.lastIndexOf(" ");
+  return (sp > n * 0.6 ? cut.slice(0, sp) : cut) + "…";
+};
+
+/** Whether withdrawn rows are folded away. Survives the refresh; see the table. */
+let showWithdrawn = false;
 
 function kpi(label, value, note) {
   return '<div class="card kpi"><div class="label">' + label + '</div>' +
          '<div class="value">' + value + '</div>' +
          '<div class="note">' + (note || "&nbsp;") + '</div></div>';
+}
+
+/** A figure inside a card, with the sentence that says why it is the honest one. */
+function vd(value, label, why, tone) {
+  return '<div><div class="n ' + (tone || "") + '">' + value + '</div>' +
+         '<div class="k">' + label + '</div>' +
+         '<div class="why">' + why + '</div></div>';
+}
+
+/**
+ * Devin's structured report, if it sent one. Held here rather than merged into
+ * the row so that what the agent said stays visibly separate from what we
+ * observed — the whole page depends on not blurring those two.
+ */
+function claim(r) {
+  const s = r.structuredOutput;
+  return s && typeof s === "object" ? s : null;
 }
 
 async function refresh() {
@@ -249,18 +366,72 @@ async function refresh() {
   const t = a.totals;
 
   // Outcome-shaped KPIs. Success rate is over *completed* work so that
-  // in-flight items cannot inflate it.
+  // in-flight items cannot inflate it, and the two latencies stay apart: one
+  // is the agent's, the other is ours.
   document.getElementById("kpis").innerHTML = [
-    kpi("Merged", t.prsMerged, t.prsOpened + " pull requests opened"),
+    kpi("Merged", t.prsMerged,
+        t.prsOpened + " opened" + (t.prsClosed ? ", " + t.prsClosed + " closed unmerged" : "")),
     kpi("Merge rate", pct(a.mergeRate), "of opened PRs accepted"),
     kpi("Success rate", pct(a.successRate),
-        t.concluded + " concluded, " + t.cancelled + " withdrawn"),
-    kpi("Median time to PR", dur(a.timeToPrSeconds.p50), "p90 " + dur(a.timeToPrSeconds.p90)),
+        t.concluded + " concluded · " + t.cancelled + " withdrawn, excluded"),
+    kpi("Issue → PR", dur(a.timeToPrSeconds.p50),
+        "median · p90 " + dur(a.timeToPrSeconds.p90) + " · agent latency"),
+    kpi("PR → merged", dur(a.timeToMergeSeconds.p50),
+        "median · human review, reported separately"),
     kpi("ACU per merged PR", a.acu.perMergedPr ? a.acu.perMergedPr.toFixed(1) : "—",
-        a.acu.reported ? a.acu.total.toFixed(1) + " ACU total" : "provider reported no ACU data"),
-    kpi("Self-corrections", a.ci.reworks,
-        a.ci.failed + " CI failures returned to Devin"),
+        a.acu.reported
+          ? a.acu.total.toFixed(1) + " ACU total"
+          : "provider reported none — not the same as free"),
   ].join("");
+
+  // The claim, and the independent check of the claim, side by side.
+  //
+  // The promoted count is the direction that costs something to build. Demoting a
+  // "fixed" that does not build is easy and everyone does it; recording a
+  // success the agent itself declined to claim requires trusting the evidence
+  // over the report, and it is the case where this system disagrees with Devin
+  // in Devin's favour.
+  const withPr = rs.remediations.filter(r => r.prUrl).length;
+  const claimed = rs.remediations.filter(r => claim(r) && claim(r).verification_passed === true).length;
+  const promoted = rs.remediations.filter(r => {
+    const c = claim(r);
+    return c && c.verification_passed === false && r.ciStatus === "passed";
+  }).length;
+
+  document.getElementById("verify").innerHTML = [
+    vd(claimed + " / " + withPr, "Claimed passing",
+       "sessions reporting verification_passed, of those that opened a PR", ""),
+    vd(a.ci.passed, "Confirmed by CI", "the same commands, re-run on the pull request",
+       a.ci.passed ? "ok" : ""),
+    vd(promoted, "Promoted over the report",
+       "Devin reported it blocked; CI passed on the same pull request, so the record says succeeded",
+       promoted ? "ok" : ""),
+    vd(a.ci.reworks, "Self-corrections", "red runs handed back and fixed with no human", ""),
+    vd(a.ci.failed, "Currently red", "pull requests whose latest run disagrees",
+       a.ci.failed ? "warn" : ""),
+    vd(t.falsePositives, "Success with no PR", "reported fixed with nothing to show for it",
+       t.falsePositives ? "warn" : ""),
+  ].join("");
+
+  document.getElementById("refusals").innerHTML = [
+    vd(a.refusals.deduplicated, "Intake refusals",
+       "already in flight, already fixed, already merged — never dispatched, never paid for", ""),
+    vd(t.cancelled, "Withdrawn", "cancelled before a verdict: a decision, not a loss", ""),
+    vd(a.refusals.mergeRequested, "Merges requested", "asking is not merging", ""),
+    vd(a.refusals.mergeEscalated, "Merges escalated",
+       "requested, never observed, handed to a human",
+       a.refusals.mergeEscalated ? "warn" : ""),
+  ].join("");
+
+  // Triggers: where the work came from. Intake does not care, which is the
+  // point — a scanner or a webhook is the same door.
+  const tgmax = Math.max(1, ...a.triggers.map(x => x.count));
+  document.getElementById("triggers").innerHTML = a.triggers.length
+    ? a.triggers.map(x =>
+        '<div class="bar-row"><div class="bar-label">' + esc(x.trigger) + '</div>' +
+        '<div class="track"><div class="fill" style="width:' + ((x.count / tgmax) * 100) + '%"></div></div>' +
+        '<div class="bar-val">' + x.count + '</div></div>').join("")
+    : '<div class="empty">Nothing triggered yet.</div>';
 
   document.getElementById("chips").innerHTML = a.byState.length
     ? a.byState.map(s =>
@@ -268,8 +439,12 @@ async function refresh() {
         esc(s.state) + ' <span class="n">' + s.count + '</span></span>').join("")
     : '<span class="empty">No remediations yet.</span>';
 
-  // Throughput columns
+  // Throughput columns. Hidden below two days: a single bar is a number
+  // wearing a chart's clothes, and it crowds out the sections that argue.
   const tp = a.throughput;
+  const showTp = tp.length > 1 ? "" : "none";
+  document.getElementById("tp-h").style.display = showTp;
+  document.getElementById("tp-card").style.display = showTp;
   const max = Math.max(1, ...tp.map(d => d.completed));
   document.getElementById("spark").innerHTML = tp.length
     ? tp.map(d => {
@@ -293,6 +468,11 @@ async function refresh() {
         '<div class="bar-val">' + c.prsOpened + ' PR / ' + c.total + '</div></div>').join("")
     : '<div class="empty">Nothing categorised yet.</div>';
 
+  // Nothing failed is not a chart. The section disappears rather than
+  // congratulating itself with an empty card.
+  const showFails = a.failureReasons.length ? "" : "none";
+  document.getElementById("fails-h").style.display = showFails;
+  document.getElementById("fails-card").style.display = showFails;
   document.getElementById("fails").innerHTML = a.failureReasons.length
     ? (() => {
         const fmax = Math.max(1, ...a.failureReasons.map(f => f.count));
@@ -304,13 +484,30 @@ async function refresh() {
       })()
     : '<div class="empty">No failures recorded. 🎉</div>';
 
-  const rows = rs.remediations.map(r => {
+  // Withdrawals are folded away by default and counted in the open: twelve
+  // near-identical intake refusals are the system working, but they crowd out
+  // the five rows a reader came to look at. Hidden, never dropped — the count
+  // is on screen and one click brings them back.
+  const shown = showWithdrawn
+    ? rs.remediations
+    : rs.remediations.filter(r => r.state !== "cancelled");
+  const folded = rs.remediations.length - shown.length;
+  document.getElementById("tbl-filter").innerHTML = folded || showWithdrawn
+    ? (showWithdrawn
+        ? 'Showing all ' + rs.remediations.length + ' rows, withdrawals included. ' +
+          '<a href="#" id="tbl-toggle">Hide withdrawn</a>'
+        : folded + ' withdrawn ' + (folded === 1 ? "row is" : "rows are") +
+          ' folded away — cancelled before a verdict, excluded from the success rate. ' +
+          '<a href="#" id="tbl-toggle">Show them</a>')
+    : "";
+
+  const rows = shown.map((r, i) => {
     const secs = r.completedAt
       ? (new Date(r.completedAt) - new Date(r.createdAt)) / 1000
       : (Date.now() - new Date(r.createdAt)) / 1000;
-    return '<tr>' +
+    return '<tr class="head-row" data-i="' + i + '">' +
       '<td><a href="' + esc(r.issueUrl) + '" target="_blank" rel="noopener">#' + r.issueNumber +
-        '</a><br><span style="color:var(--muted)">' + esc((r.title || "").slice(0, 46)) + '</span></td>' +
+        '</a><br><span style="color:var(--muted)">' + esc(trim(r.title, 64)) + '</span></td>' +
       '<td><code>' + esc(r.contractId || "—") + '</code></td>' +
       '<td><span class="chip"><span class="dot ' + esc(r.state) + '"></span>' + esc(r.state) + '</span></td>' +
       '<td class="num">' + dur(secs) + '</td>' +
@@ -325,7 +522,7 @@ async function refresh() {
         ? (r.ciStatus === "passed" ? "✅" : r.ciStatus === "failed" ? "❌" : "…") + " " + esc(r.ciStatus) +
           (r.reworks ? ' <span style="color:var(--muted)">' + r.reworks + '× fixed</span>' : "")
         : "—") + '</td>' +
-    '</tr>';
+    '</tr>' + evidenceRow(r, i);
   }).join("");
   document.querySelector("#table tbody").innerHTML =
     rows || '<tr><td colspan="7" class="empty">Nothing dispatched yet. Label an issue to begin.</td></tr>';
@@ -333,7 +530,121 @@ async function refresh() {
   document.getElementById("stamp").textContent =
     "· updated " + new Date(a.generatedAt).toLocaleTimeString();
 
-  await refreshDevin();
+  restoreOpenRows();
+  await Promise.all([refreshDevin(), refreshEscalations()]);
+}
+
+/**
+ * The evidence, quoted rather than summarised.
+ *
+ * verification_output is what the contract's own commands printed in Devin's
+ * sandbox. Rendering it verbatim is the point: a dashboard that condensed it to
+ * a green tick would be asserting the very thing the reader came to check.
+ */
+function evidenceRow(r, i) {
+  const c = claim(r);
+  if (!c) return "";
+
+  const files = Array.isArray(c.files_changed) ? c.files_changed : [];
+  const out = typeof c.verification_output === "string" ? c.verification_output : "";
+
+  return '<tr class="evidence" data-ev="' + i + '" hidden><td colspan="7">' +
+    '<div class="ev-grid">' +
+      '<div><div class="ev-k">Devin&rsquo;s summary</div><div class="ev-v">' +
+        esc(c.summary || "—") + '</div></div>' +
+      '<div><div class="ev-k">Files changed · confidence</div><div class="ev-v">' +
+        (files.length ? files.map(f => '<code>' + esc(f) + '</code>').join(" ") : "none") +
+        ' · ' + esc(c.confidence || "—") + '</div></div>' +
+    '</div>' +
+    (out
+      ? '<div class="ev-k" style="margin-bottom:5px">Verification output — the contract&rsquo;s own commands</div>' +
+        '<pre class="out">' + esc(out) + '</pre>'
+      : '<p class="ev-note">This session reported no verification output.</p>') +
+    '<p class="ev-note">Reported by the agent. ' +
+      (r.ciStatus === "passed"
+        ? 'CI re-ran the same block on the pull request and agreed.'
+        : r.ciStatus === "failed"
+          ? 'CI re-ran the same block and <strong>disagreed</strong> — see the run on the pull request.'
+          : 'CI has not returned a verdict on this one.') +
+    '</p>' +
+  '</td></tr>';
+}
+
+/**
+ * Which drawers are open survives the 5s refresh. Losing an expanded row
+ * mid-sentence because a poll landed is the kind of thing that makes people
+ * stop reading.
+ */
+const openRows = new Set();
+
+function restoreOpenRows() {
+  document.querySelectorAll("#table tbody tr.head-row").forEach(tr => {
+    const i = tr.dataset.i;
+    const ev = document.querySelector('#table tbody tr.evidence[data-ev="' + i + '"]');
+    if (!ev) return;
+    const open = openRows.has(Number(i));
+    ev.hidden = !open;
+    tr.classList.toggle("open", open);
+  });
+}
+
+document.querySelector("#table tbody").addEventListener("click", e => {
+  if (e.target.closest("a")) return;
+  const tr = e.target.closest("tr.head-row");
+  if (!tr) return;
+  const i = Number(tr.dataset.i);
+  if (openRows.has(i)) openRows.delete(i);
+  else openRows.add(i);
+  restoreOpenRows();
+});
+
+document.getElementById("tbl-filter").addEventListener("click", e => {
+  if (!e.target.closest("#tbl-toggle")) return;
+  e.preventDefault();
+  showWithdrawn = !showWithdrawn;
+  // Row indices shift with the filter, so an open drawer would reopen against
+  // a different remediation.
+  openRows.clear();
+  refresh();
+});
+
+/**
+ * Escalations, in the session's own words.
+ *
+ * Autopilot asks for a merge and never records one — the merge is read back
+ * from GitHub like any other observer. When the merge does not happen, the
+ * reason belongs on screen unedited: keyword-matching a refusal to produce a
+ * tidier label would be the system inventing a cause.
+ */
+async function refreshEscalations() {
+  const el = document.getElementById("escalations");
+  let events = [];
+  try {
+    const body = await fetch("/api/events?type=merge.escalated&limit=5").then(r => r.json());
+    events = body.events || [];
+  } catch { return; }
+
+  if (!events.length) {
+    el.innerHTML = '<div class="empty">Nothing escalated. Every requested merge was observed.</div>';
+    return;
+  }
+
+  el.innerHTML =
+    '<p class="lede">Autopilot asks for a merge. It never records one — the merge is read back ' +
+    'from GitHub like any other observer. When it does not happen, the issue is labelled ' +
+    '<code>autopilot:needs-human</code> and the session is quoted <strong>verbatim</strong>.</p>' +
+    events.map(e => {
+      const d = e.detail || {};
+      return '<div class="esc"><div class="head">' +
+        'issue #' + esc(e.issueNumber) + ' · ' +
+        (d.prUrl
+          ? '<a href="' + esc(d.prUrl) + '" target="_blank" rel="noopener">' +
+            'pull request #' + esc(String(d.prUrl).split("/").pop()) + '</a>'
+          : 'no pull request') +
+        ' · requested ' + esc(d.requestedAt ? new Date(d.requestedAt).toLocaleString() : "—") +
+        ' · escalated ' + esc(new Date(e.createdAt).toLocaleString()) +
+        '</div><blockquote>' + esc(d.reason || "no reason recorded") + '</blockquote></div>';
+    }).join("");
 }
 
 /**

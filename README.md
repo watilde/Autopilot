@@ -363,6 +363,25 @@ ship nothing. So the metrics are outcome-shaped.
 | `npm run report` | Terminal report, reads SQLite directly — works when the service is down |
 | Issue comments | Status back to whoever filed the bug |
 
+Three of the dashboard's sections exist to keep it honest rather than to fill
+space, and they are the ones worth arguing with:
+
+- **Independent verification** puts what Devin claimed (`verification_passed`)
+  next to what the pull request's own CI found, including the count *promoted
+  over the agent's own report* — a session that reported itself blocked, whose
+  PR then went green. A dashboard that only repeats the agent's self-report is
+  the agent's press release.
+- **What the system refused to do** counts the intake refusals, the withdrawals,
+  the merges asked for and the merges escalated. A refused issue never becomes a
+  remediation — that is the point of refusing it — so without this the most
+  frequent decision the orchestrator makes has no row anywhere.
+- **Escalated to a human** quotes the session verbatim. Summarising a refusal, or
+  keyword-matching it into a tidier label, would be the dashboard inventing a
+  reason.
+
+Each remediation row opens onto the evidence: what Devin changed, what it ran,
+and what those commands printed, in its own words.
+
 **The numbers that matter:**
 
 - **Merged pull requests, and merge rate.** Opening a PR is output; merging it
@@ -588,7 +607,7 @@ Full list in [`.env.example`](.env.example).
 | `POST` | `/api/tick` | force a reconcile pass |
 | `POST` | `/api/remediations/:id/reply` | answer a blocked session — `{"message": "…"}` |
 | `POST` | `/api/remediations/:id/cancel` | stop one remediation — `{"reason": "…"}` |
-| `GET` | `/api/analytics` \| `/api/remediations` \| `/api/events` | reporting |
+| `GET` | `/api/analytics` \| `/api/remediations` \| `/api/events?type=…` | reporting |
 | `GET` | `/api/devin/insights` | the provider's own view of the same sessions |
 | `GET` | `/healthz` \| `/metrics` | ops |
 
@@ -611,7 +630,7 @@ curl -X POST localhost:8080/api/remediations/1/reply \
 
 Two layers, because they fail differently.
 
-**This orchestrator** — `npm test`, 158 tests, no network:
+**This orchestrator** — `npm test`, 161 tests, no network:
 
 ```bash
 npm test
