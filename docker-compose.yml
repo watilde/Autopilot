@@ -19,11 +19,25 @@ services:
       # work without a key and without spending ACUs.
       DEVIN_MODE: ${DEVIN_MODE:-mock}
       DEVIN_API_KEY: ${DEVIN_API_KEY:-}
-      DEVIN_API_BASE_URL: ${DEVIN_API_BASE_URL:-https://api.devin.ai/v1}
+      # Host only. The client appends /v1 or /v3 from the credential.
+      DEVIN_API_BASE_URL: ${DEVIN_API_BASE_URL:-https://api.devin.ai}
+      # Normally inferred from the key prefix; set only to override.
+      DEVIN_API_VERSION: ${DEVIN_API_VERSION:-}
+      # Required when the key starts with `cog_` (v3). Without it the server
+      # refuses to start in live mode, by design -- so it has to reach the
+      # container, or `docker compose up` works in mock and fails for real.
+      DEVIN_ORG_ID: ${DEVIN_ORG_ID:-}
       DEVIN_MAX_ACU: ${DEVIN_MAX_ACU:-10}
+      DEVIN_PLAYBOOK_ID: ${DEVIN_PLAYBOOK_ID:-}
 
       # --- policy ---
       AUTOPILOT_LABEL: ${AUTOPILOT_LABEL:-autopilot}
+      MAX_CI_REWORKS: ${MAX_CI_REWORKS:-2}
+      # Off by default here too: merging is the one irreversible step, and a
+      # container that merges unattended has to have been told to.
+      AUTO_MERGE: ${AUTO_MERGE:-false}
+      AUTO_MERGE_CATEGORIES: ${AUTO_MERGE_CATEGORIES:-code-quality}
+      AUTO_MERGE_GRACE_MS: ${AUTO_MERGE_GRACE_MS:-600000}
       MAX_CONCURRENT_SESSIONS: ${MAX_CONCURRENT_SESSIONS:-3}
       RECONCILE_INTERVAL_MS: ${RECONCILE_INTERVAL_MS:-15000}
       SESSION_TIMEOUT_MS: ${SESSION_TIMEOUT_MS:-3600000}
