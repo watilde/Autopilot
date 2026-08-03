@@ -9,8 +9,10 @@ demos where an agent writes a patch. What they have not seen is a system that
 decides whether to believe it.
 
 **The demo is the middle two minutes and it is mostly silence.** Everything else
-is cut to the bone to pay for it. Resist filling the waits — a system working in
-front of people is more persuasive than a person talking over it.
+is cut to the bone to pay for it: **590 spoken words, about three and a half
+minutes**, so the rest of the five is the system working. Resist filling the
+waits — a thing working in front of people is more persuasive than a person
+talking over it.
 
 **Figures live in the deck, not here**, so there is one place to correct them.
 
@@ -27,11 +29,11 @@ you are from the section heading.
 
 | Section | Slides | Words |
 |---|---|---|
-| 0:00 – 0:35 · What | **1 · 2 · 3** | ~85 |
-| 0:35 – 2:45 · How — **the live run** | **4** → the browser → **5** | ~230 |
-| 2:45 – 3:25 · How — the decision | **6 · 7 · 8** | ~95 |
-| 3:25 – 4:25 · Why Devin | **9 · 10** | ~150 |
-| 4:25 – 5:00 · When — next | **11 · 12** | ~75 |
+| 0:00 – 0:35 · What | **1 · 2 · 3** | 78 |
+| 0:35 – 2:45 · How — **the live run** | **4** → the browser → **5** | 190 |
+| 2:45 – 3:25 · How — the decision | **6 · 7 · 8** | 83 |
+| 3:25 – 4:25 · Why Devin | **9 · 10** | 138 |
+| 4:25 – 5:00 · When — next | **11 · 12** | 86 |
 
 **Slide 5 is also the fallback.** It is a run that already finished, so it is
 where you go the moment the live one stalls — say why you moved, and come back
@@ -109,20 +111,18 @@ before the close. A demo that admits it is waiting beats a silence.
 
 **▸ Slide 1 — Autopilot** (title)
 
-> "Every org has a backlog that is real, small, and never urgent enough. Known
-> vulnerabilities. A dependency pin nobody can justify. The same weak pattern in
-> three files. Not hard — each one costs a context switch, and that is the
-> expensive part."
+> "Every org has a backlog that is real, small, and never urgent enough. Not
+> hard — each one costs a context switch, and that is the expensive part."
 
 **▸ Slide 2 — The backlog nobody gets to**
 
-> "So you point an agent at it, and you inherit a different problem: **the agent
+> "So you point an agent at it — and inherit a different problem: **the agent
 > says it fixed it. How do you know?**"
 
 **▸ Slide 3 — What shipped**
 
-> "This is Autopilot. Seven issues on a fork of Apache Superset, seven pull
-> requests, all merged — and **two of those issues nobody wrote.**"
+> "This is Autopilot. Seven issues on a Superset fork, seven merged pull
+> requests — and **two of those issues nobody wrote.**"
 
 ---
 
@@ -130,52 +130,46 @@ before the close. A demo that admits it is waiting beats a silence.
 
 **▸ Slide 4 — One button, and then we watch.** Read nothing off it.
 
-> "I am going to press one button and we are going to watch the whole thing
-> happen. Nothing here is stubbed."
+> "One button, and we watch. Nothing here is stubbed."
 
 **Click *Find something to fix*.** Then the fork's issue list, and wait.
 
-> "That started a session with no idea what is wrong with this repository. It is
-> going to read it and file what it finds."
+> "That session has no idea what is wrong with this repo. It reads it and files
+> what it finds."
 
 **When the issue appears**, open it and scroll to the fenced block.
 
-> "There it is. And the part that matters is at the bottom: a **contract** —
-> what to change, what not to touch, and the exact commands that constitute
-> done. No contract, no session. That gate has refused four hundred and
-> thirty-four issues here."
+> "The part that matters is the bottom: a **contract** — what to change, what
+> not to touch, and the commands that constitute done. No contract, no session.
+> That gate has refused four hundred and thirty-four issues here."
 
 **Dashboard.** Point at the row appearing, then wait for the pull request. This
-is the long one; use it.
-
-> "While that runs — the numbers on this page are outcome-shaped on purpose.
-> Merge rate, not pull request count. Issue-to-PR kept apart from PR-to-merged.
-> ACUs read *not reported for this account*, because 'not measured' and 'free'
-> are different claims."
+is the long wait. Say one number and stop talking: merge rate, not pull request
+count — or ACUs reading *not reported for this account*, because "not measured"
+and "free" are different claims.
 
 **When CI goes green**, open the check.
 
 > "That job read the same contract off the same issue and ran the same commands
-> again, on the pull request. **One definition of done, checked by two parties,
-> one of which has no stake in the answer.**"
+> again. **One definition of done, checked by two parties — one with no stake in
+> the answer.**"
 
 **When the review appears**, open it.
 
-> "A second session — it never saw the change being made, only the diff and the
+> "A second session. It never saw the change being made — only the diff and the
 > contract."
 
 **When it merges**, back to the dashboard.
 
-> "Autopilot asked for that merge. It did not record it. The merge is read back
-> from GitHub like any other observer."
+> "Autopilot *asked* for that merge. It never records one — the merge is read
+> back from GitHub like any other observer."
 
 **▸ Slide 5 — Nobody had noticed this bug at 08:56.** Put it up to close the
 section — and put it up early, without apology, if the live run is still going.
 
-> "And here is one that finished, end to end. At 08:56 nobody knew that bug
-> existed. Merged at 09:35 — thirty-nine minutes. The only human action in it was
-> the approval, and it was **not required**: the second one we ran merged on the
-> reviewing agent's verdict alone."
+> "One that finished, end to end. At 08:56 nobody knew that bug existed; merged
+> at 09:35. The only human action was the approval — and it was **not required**.
+> The next one merged on the reviewing agent's verdict alone."
 
 ---
 
@@ -190,34 +184,32 @@ section — and put it up early, without apology, if the live run is still going
 > the agent says about its own work** — and it has to cut both ways, or it is
 > just a rule about which errors you prefer to keep.
 >
-> Demoting a 'fixed' that does not build is easy. The other direction is the
-> hard one: a remediation recorded `failed`, on the agent's own report, that CI
-> later passed on the same pull request. That gets promoted."
+> Demoting a 'fixed' that does not build is easy. The hard direction: a
+> remediation recorded `failed` on the agent's own report, that CI later passed.
+> That gets promoted."
 
-**▸ Slide 8 — What the system refuses to claim**
+**▸ Slide 8 — What the system refuses to claim.** Let the room read it.
 
-> "And the same principle decides what this will *not* claim. It asks for merges.
-> It never records one."
+> "And the same principle decides what it will not claim."
 
 ---
 
 ## 3:25 – 4:25 · Why Devin · slides 9 · 10
 
 Three artefacts. Everything else here could be built without an agent; these
-could not. Let the room read the quotes — do not read them aloud.
+could not. **Let the room read the quotes** — they are on the slides.
 
 **▸ Slide 9 — It argues back, and it is right.** Recording: open issue #5.
 
 > "The contract said verify with `tsc --noEmit`. It got everything else green,
 > then stopped: that check fails in *any* clean checkout, and fixing it is
-> outside this contract. It was right. A codemod fails silently; a worse agent
-> disables the check."
+> outside this contract. It was right. A worse agent disables the check."
 
 **▸ Slide 10 — It refuses, and explains.** Recording: open issue #3.
 
-> "We asked it to merge its own pull request. It said: *my tooling blocks
-> merging into master — that is my guardrail, not GitHub's, so I will not try
-> auto-merge as a workaround.* Then it named what would permit one."
+> "We asked it to merge its own pull request: *my tooling blocks merging into
+> master — my guardrail, not GitHub's — so I will not try auto-merge as a
+> workaround.*"
 
 **Still slide 10.** Recording: open PR #14.
 
@@ -225,9 +217,9 @@ could not. Let the room read the quotes — do not read them aloud.
 > GitHub will not let this account approve a pull request it opened.* It hit a
 > limit on its own authority and reported it accurately.
 >
-> **That is the case for an autonomous agent.** Not that it writes the patch —
-> plenty of things write patches. It is that when it is not entitled to do what
-> you asked, it says so, and you can build a system that listens."
+> **That is the case for an autonomous agent.** Not that it writes the patch. It
+> is that when it is not entitled to do what you asked, it says so — and you can
+> build a system that listens."
 
 ---
 
@@ -240,12 +232,11 @@ could not. Let the room read the quotes — do not read them aloud.
 > **Confidence as the merge gate, not category** — diff size, blast radius,
 > whether the change stayed inside the modules the contract named.
 >
-> **A reviewer who is not us.** An agent reviewing an agent is a second opinion
-> — GitHub says so itself by refusing the approval. That needs a different
-> identity, not another agent.
+> **A reviewer who is not us** — an agent reviewing an agent is a second opinion,
+> and GitHub says so itself by refusing the approval.
 >
-> **Contracts from scanners.** Intake does not care where an issue came from.
-> That is where the volume is.
+> **Contracts from scanners.** Intake does not care where an issue came from, and
+> that is where the volume is.
 >
 > Repos and the write-up are in the description. Thanks."
 
