@@ -9,7 +9,7 @@ demos where an agent writes a patch. What they have not seen is a system that
 decides whether to believe it.
 
 **The demo is the middle two minutes and it is mostly silence.** Everything else
-is cut to the bone to pay for it: **644 spoken words, about four
+is cut to the bone to pay for it: **636 spoken words, about four
 minutes**, so the rest of the five is the system working. Resist filling the
 waits — a thing working in front of people is more persuasive than a person
 talking over it.
@@ -30,10 +30,10 @@ you are from the section heading.
 | Section | Slides | Words |
 |---|---|---|
 | 0:00 – 0:35 · What | **1 · 2 · 3** | 78 |
-| 0:35 – 2:45 · How — **the live run** | **4** → the browser → **5** | 244 |
+| 0:35 – 2:45 · How — **the live run** | **4** → the browser → **5** | 247 |
 | 2:45 – 3:25 · How — the decision | **6 · 7 · 8** | 83 |
-| 3:25 – 4:25 · Why Devin | **9 · 10** | 153 |
-| 4:25 – 5:00 · When — next | **11 · 12** | 86 |
+| 3:25 – 4:25 · Why Devin | **9 · 10** | 148 |
+| 4:25 – 5:00 · When — next | **11 · 12** | 80 |
 
 **Slide 5 is also the fallback.** It is a run that already finished, so it is
 where you go the moment the live one stalls — say why you moved, and come back
@@ -128,7 +128,7 @@ before the close. A demo that admits it is waiting beats a silence.
 
 ## 0:35 – 2:45 · How — the live run · slide 4, then the browser, then 5
 
-Six beats, in the order they happen. Between them you are watching, not talking.
+Seven beats, in the order they happen. Between them you are watching, not talking.
 
 **▸ Slide 4 — One button, and then we watch.** Read nothing off it.
 
@@ -142,51 +142,60 @@ Six beats, in the order they happen. Between them you are watching, not talking.
 
 ### 2 · What Devin is doing, from Devin's side
 
-**Open the session link** — every dashboard row carries one — then the *As
-reported by Devin* panel at the foot of the page.
+**Open the session link**, then the *As reported by Devin* panel at the foot of
+the dashboard.
 
-> "The same work, counted by Devin instead of by us. If the prompts and tags we
-> claim to have sent are not the ones it received, **this is where that shows
-> up** — checkable against Devin's own dashboard, without taking my word for it."
+> "The same work, counted by Devin instead of by us. If what we claim to have
+> sent is not what it received, **this is where that shows up** — without taking
+> my word for it."
 
 ### 3 · It files the issue
 
-**Open the new issue** and scroll to the fenced block.
+**Open the new issue**, scroll to the fenced block.
 
-> "A real defect, and at the bottom a **contract**: what to change, what not to
-> touch, and the commands that constitute done. No contract, no session — that
-> gate has refused four hundred and thirty-four issues here."
+> "A real defect — and at the bottom a **contract**: what to change, what not to
+> touch, and the commands that constitute done."
 
-### 4 · A pull request against that issue
+### 4 · The Autopilot dashboard
+
+**Back to `localhost:8080`.** The row appears. Scroll past the top numbers to
+the two sections underneath.
+
+> "Accepted, because the contract parsed. That gate has refused four hundred and
+> thirty-four issues here — never dispatched, never paid for. And ACUs read *not
+> reported for this account*: 'not measured' and 'free' are different claims.
+>
+> **A system that reports only what it did is not observable, it is
+> advertising.**"
+
+### 5 · A pull request against that issue
 
 **Open the PR.** Point at the body.
 
 > "It carries the commands it ran and what they printed. Not a summary of them."
 
-### 5 · Wait for CI to go green
+### 6 · Wait for CI to go green
 
-**Open the check.** The long wait — say one number, then stop talking.
+**Open the check.** The long wait — say this once, then stop talking.
 
 > "That job read the same contract off the same issue and ran the same commands
 > again. **One definition of done, checked by two parties — one with no stake in
 > the answer.**"
 
-### 6 · It merges its own pull request
+### 7 · It merges its own pull request
 
 *(With `REVIEW_AGENT` on, a second session reviews first and its verdict releases
 the merge. If that is on camera: "a second session, which never saw the change
 being made — only the diff and the contract.")*
 
 > "Then it merges its own pull request. Autopilot **asked** — it never records a
-> merge. That comes back from GitHub like any other observer, which is why a
-> merge that never happened shows up as a pull request still open."
+> merge. That comes back from GitHub like any other observer."
 
 **▸ Slide 5 — Nobody had noticed this bug at 08:56.** Close on it — and put it up
 early, without apology, if the live run is still going.
 
 > "At 08:56 nobody knew that bug existed; merged at 09:35. The only human action
-> was the approval — and it was **not required**. The next one merged on the
-> reviewing agent's verdict alone."
+> was the approval — and it was **not required**."
 
 ---
 
@@ -224,9 +233,8 @@ could not. **Let the room read the quotes** — they are on the slides.
 
 **▸ Slide 10 — It refuses, and explains.** Recording: open issue #3.
 
-> "We asked it to merge its own pull request: *my tooling blocks merging into
-> master — my guardrail, not GitHub's — so I will not try auto-merge as a
-> workaround.*"
+> "We asked it to merge into master: *my tooling blocks that — my guardrail, not
+> GitHub's — so I will not try auto-merge as a workaround.*"
 
 **Still slide 10.** Recording: open PR #14.
 
@@ -252,8 +260,8 @@ could not. **Let the room read the quotes** — they are on the slides.
 > **A reviewer who is not us** — an agent reviewing an agent is a second opinion,
 > and GitHub says so itself by refusing the approval.
 >
-> **Contracts from scanners.** Intake does not care where an issue came from, and
-> that is where the volume is.
+> **Contracts from scanners** — Dependabot, CodeQL, Sentry. That is where the
+> volume is.
 >
 > Repos and the write-up are in the description. Thanks."
 
