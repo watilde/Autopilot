@@ -430,7 +430,22 @@ export class Orchestrator {
   async reply(id: number, message: string): Promise<Remediation | null> {
     const r = this.store.get(id);
     if (!r || !r.devinSessionId) return null;
-    if (isTerminal(r.state)) return r;
+
+    /**
+     * A message is not a revival, and refusing to send one because the
+     * remediation is terminal closes the operator's only channel exactly when
+     * it is needed. The case that found this: a pull request waiting on a
+     * merge. By then the remediation is `succeeded` — terminal — while its
+     * session sits `blocked`, waiting for a human, and the endpoint returned
+     * 200 and did nothing. A silent no-op is worse than a refusal, because the
+     * operator believes they were heard.
+     *
+     * `cancelled` is the one state that still refuses. The operator withdrew
+     * that work deliberately, and the session behind it has usually been
+     * terminated, so a message would be talking to something that was stopped
+     * on purpose.
+     */
+    if (r.state === 'cancelled') return r;
 
     await this.devin.sendMessage(r.devinSessionId, message);
 

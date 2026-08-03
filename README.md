@@ -688,7 +688,7 @@ curl -X POST localhost:8080/api/remediations/1/reply \
 
 Two layers, because they fail differently.
 
-**This orchestrator** — `npm test`, 198 tests, no network:
+**This orchestrator** — `npm test`, 201 tests, no network:
 
 ```bash
 npm test

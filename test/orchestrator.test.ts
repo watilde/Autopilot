@@ -1726,3 +1726,55 @@ describe('standing merges', () => {
     expect(h.devin.messages).toHaveLength(before);
   });
 });
+
+/**
+ * The operator's only channel to a session, and the state it was closed in.
+ *
+ * A pull request waiting on a merge sits behind a `succeeded` remediation with
+ * a `blocked` session. `reply` refused on terminal state and returned the
+ * remediation unchanged, so the endpoint answered 200 and did nothing — the
+ * operator believed they were heard and the session never got the message.
+ */
+describe('replying to a session', () => {
+  async function shipped() {
+    const h = harness(new DevinMockClient({ pollsUntilTerminal: 1, forceOutcome: 'fixed' }));
+    await h.orchestrator.intake(issue(), 'test');
+    await h.orchestrator.dispatch();
+    await h.orchestrator.reconcile();
+    await h.orchestrator.reconcile();
+    const r = h.store.listAll()[0]!;
+    expect(r.state).toBe('succeeded');
+    return { ...h, id: r.id };
+  }
+
+  it('reaches a live session even when the remediation is terminal', async () => {
+    const h = await shipped();
+
+    await h.orchestrator.reply(h.id, 'the base branch changed; please merge');
+
+    expect(h.devin.messages.at(-1)!.message).toContain('base branch changed');
+    expect(h.store.listEvents(10, 'remediation.reply')).toHaveLength(1);
+    // A message is not a revival: a settled remediation stays settled.
+    expect(h.store.get(h.id)!.state).toBe('succeeded');
+  });
+
+  it('still returns a blocked remediation to running', async () => {
+    const h = await shipped();
+    h.store.transition(h.id, 'blocked', {});
+
+    await h.orchestrator.reply(h.id, 'here is the answer');
+
+    expect(h.store.get(h.id)!.state).toBe('running');
+  });
+
+  /** Withdrawn work was stopped on purpose; its session usually no longer exists. */
+  it('refuses to message a cancelled remediation', async () => {
+    const h = await shipped();
+    h.store.transition(h.id, 'cancelled', { error: 'withdrawn' });
+
+    await h.orchestrator.reply(h.id, 'are you there');
+
+    expect(h.devin.messages).toHaveLength(0);
+    expect(h.store.listEvents(10, 'remediation.reply')).toHaveLength(0);
+  });
+});
