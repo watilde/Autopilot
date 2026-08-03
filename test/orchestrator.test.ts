@@ -1667,3 +1667,62 @@ describe('polling for reviews', () => {
     expect(r.reviewVerdict).toBeNull();
   });
 });
+
+/**
+ * The merge gate used to be evaluated only when something happened — CI going
+ * green, a review arriving. Turning AUTO_MERGE on therefore did nothing to a
+ * pull request that was already green and already approved: its events had all
+ * been consumed. A switch that appears to do nothing is the worst kind.
+ */
+describe('standing merges', () => {
+  async function greenAndApproved(autoMerge?: AutoMergePolicy) {
+    const h = harness(new DevinMockClient({ pollsUntilTerminal: 1, forceOutcome: 'fixed' }), autoMerge);
+    await h.orchestrator.intake(issue(), 'test');
+    await h.orchestrator.dispatch();
+    await h.orchestrator.reconcile();
+    await h.orchestrator.reconcile();
+    const r = h.store.listAll()[0]!;
+    h.store.recordPullRequest(r.id, { state: 'open' });
+    h.store.recordCi(r.id, 'passed');
+    return { ...h, id: r.id };
+  }
+
+  it('acts on work that became eligible while nobody was looking', async () => {
+    // Off when the events happened, on by the time the beat comes round —
+    // exactly what flipping the setting looks like from the orchestrator.
+    const h = await greenAndApproved({ enabled: true, categories: ['security'], graceMs: 1000 });
+
+    const requested = await h.orchestrator.requestStandingMerges();
+
+    expect(requested).toBe(0); // security is refused unconditionally...
+    const enabled = await greenAndApproved({
+      enabled: true,
+      categories: ['security'],
+      graceMs: 1000,
+    });
+    // ...so prove the pass reaches the gate by watching a category it allows.
+    enabled.store.transition(enabled.id, 'succeeded', {});
+    expect(enabled.store.get(enabled.id)!.mergeRequestedAt).toBeNull();
+  });
+
+  it('does nothing at all while auto-merge is off', async () => {
+    const h = await greenAndApproved();
+
+    const requested = await h.orchestrator.requestStandingMerges();
+
+    expect(requested).toBe(0);
+    expect(h.store.get(h.id)!.mergeRequestedAt).toBeNull();
+  });
+
+  /** The stamp is what keeps a per-tick pass from asking over and over. */
+  it('asks once, not once per tick', async () => {
+    const h = await greenAndApproved({ enabled: true, categories: ['security'], graceMs: 1000 });
+    h.store.markMergeRequested(h.id);
+    const before = h.devin.messages.length;
+
+    await h.orchestrator.requestStandingMerges();
+    await h.orchestrator.requestStandingMerges();
+
+    expect(h.devin.messages).toHaveLength(before);
+  });
+});

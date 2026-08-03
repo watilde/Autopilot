@@ -1380,6 +1380,35 @@ export class Orchestrator {
    * would re-send the same change request, once per reconcile interval, for as
    * long as the review stood.
    */
+  /**
+   * Re-examine pull requests that already satisfy every gate.
+   *
+   * The merge gate was only ever evaluated on an event — CI reporting green, a
+   * review arriving, a session reporting its verdict. That is fine while the
+   * policy is fixed and wrong the moment it changes: turning `AUTO_MERGE` on,
+   * or adding a category to the allowlist, did nothing at all to a pull request
+   * that was already green and already approved, because its events had all
+   * been consumed. The switch appeared to do nothing, which is the worst way
+   * for a switch to behave.
+   *
+   * So the gate is also evaluated on the beat, for standing work. Every check
+   * inside `requestMergeIfEligible` still applies and the stamp still makes it
+   * idempotent, so this can only ever act on something that became eligible
+   * while nobody was looking.
+   */
+  async requestStandingMerges(): Promise<number> {
+    if (!this.autoMerge.enabled) return 0;
+    let requested = 0;
+
+    for (const r of this.store.listAwaitingPullRequestOutcome()) {
+      if (r.mergeRequestedAt || r.state !== 'succeeded' || r.ciStatus !== 'passed') continue;
+      const result = await this.requestMergeIfEligible(r);
+      if (result.requested) requested++;
+    }
+
+    return requested;
+  }
+
   async syncReviews(): Promise<number> {
     if (!this.github.enabled) return 0;
     let handled = 0;
@@ -1851,6 +1880,9 @@ export class Orchestrator {
       // is green, and before the merge escalation, so an approval that arrived
       // this tick is acted on rather than counted as an unperformed merge.
       await this.reconcileReviews();
+      // After the verdicts, so a policy change and an approval landing on the
+      // same tick are both accounted for before anything is escalated.
+      await this.requestStandingMerges();
       // After syncPullRequests, so a merge that did land is recorded first and
       // never escalated as if it had not.
       await this.escalateUnperformedMerges();
