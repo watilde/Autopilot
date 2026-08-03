@@ -106,7 +106,7 @@ before the close. A demo that admits it is waiting beats a silence.
 
 ---
 
-## 0:00 – 0:35 · What
+## 0:00 – 0:35 · What · slides 1 · 2 · 3
 
 **▸ Slide 1 — Autopilot** (title)
 
@@ -127,7 +127,7 @@ before the close. A demo that admits it is waiting beats a silence.
 
 ---
 
-## 0:35 – 2:45 · How — the live run
+## 0:35 – 2:45 · How — the live run · slide 4, then the browser (8 · 10 in reserve)
 
 **▸ Slide 4 — One button, and then we watch.** Read nothing off it.
 
@@ -174,7 +174,7 @@ slow to load.)*
 
 ---
 
-## 2:45 – 3:25 · How — the decision
+## 2:45 – 3:25 · How — the decision · slides 7 · 9 · 13
 
 **▸ Slide 7 — Architecture.** Recording: open `orchestrator.ts` at
 `settleOnIndependentVerification` instead, and let the code be the slide.
@@ -196,7 +196,7 @@ slow to load.)*
 
 ---
 
-## 3:25 – 4:25 · Why Devin
+## 3:25 – 4:25 · Why Devin · slides 11 · 12
 
 Three artefacts. Everything else here could be built without an agent; these
 could not. Let the room read the quotes — do not read them aloud.
@@ -226,7 +226,7 @@ could not. Let the room read the quotes — do not read them aloud.
 
 ---
 
-## 4:25 – 5:00 · When
+## 4:25 – 5:00 · When · slides 14 · 15
 
 **▸ Slide 14 — Next, in a real engagement**
 
