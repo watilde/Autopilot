@@ -778,7 +778,7 @@ scripts/
   report.ts          terminal report
   sync-labels.ts     repair labels that drifted from the record
 docs/
-  slides.html        the deck — thirteen slides, open it, no build step
+  slides.html        the deck — twelve slides, open it, no build step
   loom-script.md     the script: what to say, timed for five minutes
 ```
 

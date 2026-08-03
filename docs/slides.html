@@ -17,8 +17,9 @@
          N        presenter notes
          P        print / save as PDF (one slide per page)
 
-  Fifteen slides, paced for five minutes. Presenter notes live in
-  <aside class="notes"> under each slide and are hidden until N.
+  Twelve slides, paced for five minutes. Every one of them has words to say — Presenter notes live in
+  a slide nobody speaks to is a slide that should not be in the deck.
+  Presenter notes live in <aside class="notes"> and are hidden until N.
 -->
 
 <style>
@@ -693,69 +694,6 @@ body.notes-on #notes-panel { display: block; }
     </section>
 
     <!-- 6 ------------------------------------------------------------------ -->
-    <section class="slide" data-header="What Devin wrote">
-      <h2 class="wide">Anatomy of a pull request — DEP-001</h2>
-      <p class="pr-meta">
-        <strong>#8</strong> · +173 −0 ·
-        <code>docs/dependency-audit-setuptools.md</code> · branch
-        <code>autopilot/dep-001-issue-4</code>
-      </p>
-      <div class="pr-cols">
-        <div class="pr-block">
-          <div class="bar">Summary</div>
-          <div class="pr-body">
-            <p>
-              The pin's own comment blames “Preset's <code>clients</code>
-              package” — which does not appear anywhere in this dependency tree.
-            </p>
-            <ul>
-              <li>
-                <code>pkg_resources</code> still ships in setuptools 81 and is
-                removed in 82 — the cliff is <code>&lt;82</code>, not
-                <code>&lt;81</code>
-              </li>
-              <li>
-                One runtime dependency imports it unconditionally:
-                <code>sqlalchemy-redshift</code>. Its fixed release requires
-                SQLAlchemy 2.0, which Superset does not pin to
-              </li>
-              <li>
-                <strong>Recommendation: keep the ceiling.</strong> It cannot be
-                lifted until Superset supports SQLAlchemy 2.0
-              </li>
-            </ul>
-          </div>
-        </div>
-        <div class="pr-block">
-          <div class="bar">Testing instructions</div>
-          <div class="pr-body">
-<pre>$ uv pip install sqlalchemy-redshift==0.8.14 \
-                 setuptools==81.0.0
-$ python -c "import sqlalchemy_redshift"
-<span class="out">UserWarning: pkg_resources is deprecated</span>
-
-$ uv pip install setuptools==82.0.0
-$ python -c "import sqlalchemy_redshift"
-<span class="fail">ModuleNotFoundError: No module named
-'pkg_resources'</span></pre>
-          </div>
-        </div>
-      </div>
-      <div class="spacer"></div>
-      <p class="small">
-        The deliverable was a <strong>recommendation, not a diff</strong> — and
-        every claim in it is a command a reviewer can rerun. All five pull
-        requests are written this way: the playbook requires the body to carry
-        what was run and what it printed.
-      </p>
-      <aside class="notes">
-        Do not read the panels. One sentence: the pin's stated reason was wrong,
-        nobody had ever checked, and checking <em>was</em> the deliverable. If
-        asked why this one — it is the pull request a codemod has no answer for.
-      </aside>
-    </section>
-
-    <!-- 7 ------------------------------------------------------------------ -->
     <section class="slide diagram-slide" data-header="Architecture">
       <h2 class="wide">Architecture</h2>
 <pre class="diagram">  TRIGGERS                  ORCHESTRATOR                 EXTERNAL
@@ -791,29 +729,7 @@ $ python -c "import sqlalchemy_redshift"
       </aside>
     </section>
 
-    <!-- 8 ------------------------------------------------------------------ -->
-    <section class="slide" data-header="Verification">
-      <h2 class="wide">One definition of done, checked by two parties</h2>
-      <p class="wide">Every issue carries a machine-readable <strong>contract</strong>:</p>
-<pre>id: SEC-001
-category: security
-files: [superset/examples/helpers.py]
-do_not_touch: [tests/, migrations/]
-verify:
-  - ruff check superset/examples/helpers.py
-  - pytest tests/unit_tests/examples/</pre>
-      <ul>
-        <li><strong>Devin</strong> runs those commands in its sandbox before opening the PR</li>
-        <li><strong>CI on the pull request</strong> reads the same block off the same issue and runs them again</li>
-      </ul>
-      <p class="small">One of the two has no stake in the answer. That is the entire point.</p>
-      <aside class="notes">
-        The contract is also the refusal surface: an issue without a valid block
-        is rejected at intake and never becomes a paid session.
-      </aside>
-    </section>
-
-    <!-- 9 ------------------------------------------------------------------ -->
+    <!-- 7 ------------------------------------------------------------------ -->
     <section class="slide" data-header="The principle">
       <h2 class="wide">The principle</h2>
       <div class="big center">
@@ -846,59 +762,27 @@ verify:
       </aside>
     </section>
 
-    <!-- 10 ----------------------------------------------------------------- -->
-    <section class="slide" data-header="Measurement">
-      <h2 class="wide">If I were an engineering leader, how would I know this is working?</h2>
-      <table class="metrics">
-        <tbody>
-          <tr>
-            <td>Merge rate</td>
-            <td class="fig">100% (7 of 7)</td>
-            <td>an unmerged PR is work the org declined</td>
-          </tr>
-          <tr>
-            <td>Success rate</td>
-            <td class="fig">100% of 7 concluded</td>
-            <td>12 withdrawn are excluded — a cancellation is a decision, not a verdict</td>
-          </tr>
-          <tr>
-            <td>Issue → PR</td>
-            <td class="fig">median 17.6m</td>
-            <td>agent latency</td>
-          </tr>
-          <tr>
-            <td>PR → merged</td>
-            <td class="fig">median 46.8m</td>
-            <td><em>review</em> latency — human or agent, reported separately from the agent's</td>
-          </tr>
-          <tr>
-            <td>CI verdicts</td>
-            <td class="fig">7 passed, 2 self-corrections</td>
-            <td>how often the independent check rejected the work, and how often it was fixed with no human</td>
-          </tr>
-          <tr>
-            <td>Refused at intake</td>
-            <td class="fig">434</td>
-            <td>already in flight, already fixed, already merged — never dispatched, never paid for</td>
-          </tr>
-          <tr>
-            <td>ACUs</td>
-            <td class="fig">not reported for this account</td>
-            <td>“not measured” and “free” are different claims</td>
-          </tr>
-        </tbody>
-      </table>
-      <p class="small">
-        Dashboard · Prometheus <code>/metrics</code> · <code>npm run report</code>
-        — reads SQLite directly, so it works when the service is down.
-      </p>
+    <!-- 8 ------------------------------------------------------------------ -->
+    <section class="slide" data-header="Credibility">
+      <h2 class="wide">What the system refuses to claim</h2>
+      <div class="big center">Autopilot asks for a merge. It never records one.</div>
+      <ul>
+        <li>Nothing on that path writes <code>pr_state</code> — the merge is read back from GitHub, like any other observer</li>
+        <li>A merge that never happened shows up as a pull request <strong>still open</strong>, not a shipped fix</li>
+        <li>After a grace period it labels the issue <code>autopilot:needs-human</code> and <strong>quotes the session verbatim</strong> — no keyword-matching the refusal, because that would be the system inventing a reason</li>
+        <li>The dashboard counts the refusals rather than only the wins: <strong>434</strong> issues declined at intake, <strong>2</strong> merges asked for and never observed, and the session's own words underneath</li>
+        <li>An agent's approval is counted as <strong>an agent's approval</strong> — GitHub refuses to let it approve at all, and the record says which kind it was</li>
+      </ul>
       <aside class="notes">
-        The denominators are the argument. Summing the two latencies would let a
-        slow reviewer make the agent look slow.
+        Land it on the last bullet: an escalation nobody is told about is the
+        same as a failure nobody sees, and an agent's approval counted as a
+        human's is the same lie in the other direction.
+        This slide is the credibility slide. A system that only reports its wins
+        is not observable, it is marketing.
       </aside>
     </section>
 
-    <!-- 11 ----------------------------------------------------------------- -->
+    <!-- 9 ------------------------------------------------------------------ -->
     <section class="slide" data-header="Why Devin · 1 of 2">
       <h2 class="wide">Why Devin — 1. It argues back, and it is right</h2>
       <p class="wide">
@@ -926,7 +810,7 @@ verify:
       </aside>
     </section>
 
-    <!-- 12 ----------------------------------------------------------------- -->
+    <!-- 10 ----------------------------------------------------------------- -->
     <section class="slide tight" data-header="Why Devin · 2 of 2">
       <h2 class="wide">Why Devin — 2. It refuses, and explains</h2>
       <p class="wide">
@@ -960,26 +844,7 @@ verify:
       </aside>
     </section>
 
-    <!-- 13 ----------------------------------------------------------------- -->
-    <section class="slide" data-header="Credibility">
-      <h2 class="wide">What the system refuses to claim</h2>
-      <div class="big center">Autopilot asks for a merge. It never records one.</div>
-      <ul>
-        <li>Nothing on that path writes <code>pr_state</code> — the merge is read back from GitHub, like any other observer</li>
-        <li>A merge that never happened shows up as a pull request <strong>still open</strong>, not a shipped fix</li>
-        <li>After a grace period it labels the issue <code>autopilot:needs-human</code> and <strong>quotes the session verbatim</strong> — no keyword-matching the refusal, because that would be the system inventing a reason</li>
-        <li>The dashboard counts the refusals rather than only the wins: <strong>434</strong> issues declined at intake, <strong>2</strong> merges asked for and never observed, and the session's own words underneath</li>
-        <li>An agent's approval is counted as <strong>an agent's approval</strong> — GitHub refuses to let it approve at all, and the record says which kind it was</li>
-      </ul>
-      <div class="spacer"></div>
-      <p class="small">An escalation nobody is told about is the same as a failure nobody sees.</p>
-      <aside class="notes">
-        This slide is the credibility slide. A system that only reports its wins
-        is not observable, it is marketing.
-      </aside>
-    </section>
-
-    <!-- 14 ----------------------------------------------------------------- -->
+    <!-- 11 ----------------------------------------------------------------- -->
     <section class="slide" data-header="Next">
       <h2 class="wide">Next, in a real engagement</h2>
       <div class="next-item">
@@ -1009,7 +874,7 @@ verify:
       </div>
     </section>
 
-    <!-- 15 ----------------------------------------------------------------- -->
+    <!-- 12 ----------------------------------------------------------------- -->
     <section class="slide" data-header="Run it yourself">
       <h2 class="wide">Run it yourself</h2>
 <pre>git clone https://github.com/watilde/Autopilot.git &amp;&amp; cd Autopilot

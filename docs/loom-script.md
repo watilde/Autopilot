@@ -16,26 +16,26 @@ front of people is more persuasive than a person talking over it.
 
 ## Which slide is up
 
-Every slide is accounted for. The cue is printed before each thing you say, so
-you never have to work out where you are from the section heading.
+Twelve slides, and **every one of them has words to say**. A slide nobody speaks
+to is a slide that should not be in the deck, so three came out: the anatomy of a
+single pull request, the contract slide, and the metrics table. All three were
+saying on paper what the demo says on screen.
+
+The order is the order you present in: **the script never sends you backwards.**
+The cue is printed before each thing you say, so you never have to work out where
+you are from the section heading.
 
 | Section | Slides | Words |
 |---|---|---|
 | 0:00 – 0:35 · What | **1 · 2 · 3** | ~85 |
-| 0:35 – 2:45 · How — **the live run** | **4** → the browser, with **8** and **10** while you wait | ~190 |
-| 2:45 – 3:25 · How — the decision | **7 · 9 · 13** | ~95 |
-| 3:25 – 4:25 · Why Devin | **11 · 12** | ~150 |
-| 4:25 – 5:00 · When — next | **14 · 15** | ~75 |
+| 0:35 – 2:45 · How — **the live run** | **4** → the browser → **5** | ~230 |
+| 2:45 – 3:25 · How — the decision | **6 · 7 · 8** | ~95 |
+| 3:25 – 4:25 · Why Devin | **9 · 10** | ~150 |
+| 4:25 – 5:00 · When — next | **11 · 12** | ~75 |
 
-Two slides are deliberately not in the run:
-
-- **Slide 5** — the run that finished this morning. The **fallback**: put it up
-  the moment the live one goes quiet, and say why you moved.
-- **Slide 6** — the anatomy of one pull request. **Skip it** unless someone asks
-  what Devin's output actually looks like, in which case it is the answer and it
-  is worth the twenty seconds.
-
----
+**Slide 5 is also the fallback.** It is a run that already finished, so it is
+where you go the moment the live one stalls — say why you moved, and come back
+before the close.
 
 ## The live run does not fit in five minutes
 
@@ -52,8 +52,7 @@ button anyway (it is real, and a second audit is a legitimate thing to start),
 then follow the run that is already at the CI stage. Those last three steps — CI
 green, the review, the merge — take about six minutes of wall clock and can be
 trimmed in Loom. Say that you started it earlier. Do not imply the whole thing
-happened in five minutes; the timeline on slide 5 is the honest version and it is
-on screen anyway.
+happened in five minutes; slide 5 is the honest version and you say it out loud there.
 
 **Live, in a room.** Press the button and let it run. The waits are the demo:
 they are when you talk about the contract gate, the numbers, and the two
@@ -127,7 +126,7 @@ before the close. A demo that admits it is waiting beats a silence.
 
 ---
 
-## 0:35 – 2:45 · How — the live run · slide 4, then the browser (8 · 10 in reserve)
+## 0:35 – 2:45 · How — the live run · slide 4, then the browser, then 5
 
 **▸ Slide 4 — One button, and then we watch.** Read nothing off it.
 
@@ -140,7 +139,6 @@ before the close. A demo that admits it is waiting beats a silence.
 > going to read it and file what it finds."
 
 **When the issue appears**, open it and scroll to the fenced block.
-*(If you would rather show it on the deck than in the browser: **slide 8 — One definition of done, checked by two parties**.)*
 
 > "There it is. And the part that matters is at the bottom: a **contract** —
 > what to change, what not to touch, and the exact commands that constitute
@@ -148,8 +146,7 @@ before the close. A demo that admits it is waiting beats a silence.
 > thirty-four issues here."
 
 **Dashboard.** Point at the row appearing, then wait for the pull request. This
-is the long one; use it. *(**Slide 10** is the same numbers, if the dashboard is
-slow to load.)*
+is the long one; use it.
 
 > "While that runs — the numbers on this page are outcome-shaped on purpose.
 > Merge rate, not pull request count. Issue-to-PR kept apart from PR-to-merged.
@@ -172,14 +169,22 @@ slow to load.)*
 > "Autopilot asked for that merge. It did not record it. The merge is read back
 > from GitHub like any other observer."
 
+**▸ Slide 5 — Nobody had noticed this bug at 08:56.** Put it up to close the
+section — and put it up early, without apology, if the live run is still going.
+
+> "And here is one that finished, end to end. At 08:56 nobody knew that bug
+> existed. Merged at 09:35 — thirty-nine minutes. The only human action in it was
+> the approval, and it was **not required**: the second one we ran merged on the
+> reviewing agent's verdict alone."
+
 ---
 
-## 2:45 – 3:25 · How — the decision · slides 7 · 9 · 13
+## 2:45 – 3:25 · How — the decision · slides 6 · 7 · 8
 
-**▸ Slide 7 — Architecture.** Recording: open `orchestrator.ts` at
+**▸ Slide 6 — Architecture.** Recording: open `orchestrator.ts` at
 `settleOnIndependentVerification` instead, and let the code be the slide.
 
-**▸ Slide 9 — The principle**
+**▸ Slide 7 — The principle**
 
 > "One decision runs through the codebase: **independent evidence outranks what
 > the agent says about its own work** — and it has to cut both ways, or it is
@@ -189,32 +194,32 @@ slow to load.)*
 > hard one: a remediation recorded `failed`, on the agent's own report, that CI
 > later passed on the same pull request. That gets promoted."
 
-**▸ Slide 13 — What the system refuses to claim**
+**▸ Slide 8 — What the system refuses to claim**
 
 > "And the same principle decides what this will *not* claim. It asks for merges.
 > It never records one."
 
 ---
 
-## 3:25 – 4:25 · Why Devin · slides 11 · 12
+## 3:25 – 4:25 · Why Devin · slides 9 · 10
 
 Three artefacts. Everything else here could be built without an agent; these
 could not. Let the room read the quotes — do not read them aloud.
 
-**▸ Slide 11 — It argues back, and it is right.** Recording: open issue #5.
+**▸ Slide 9 — It argues back, and it is right.** Recording: open issue #5.
 
 > "The contract said verify with `tsc --noEmit`. It got everything else green,
 > then stopped: that check fails in *any* clean checkout, and fixing it is
 > outside this contract. It was right. A codemod fails silently; a worse agent
 > disables the check."
 
-**▸ Slide 12 — It refuses, and explains.** Recording: open issue #3.
+**▸ Slide 10 — It refuses, and explains.** Recording: open issue #3.
 
 > "We asked it to merge its own pull request. It said: *my tooling blocks
 > merging into master — that is my guardrail, not GitHub's, so I will not try
 > auto-merge as a workaround.* Then it named what would permit one."
 
-**Still slide 12.** Recording: open PR #14.
+**Still slide 10.** Recording: open PR #14.
 
 > "And the reviewing session opened with: *submitting as a comment, because
 > GitHub will not let this account approve a pull request it opened.* It hit a
@@ -226,9 +231,9 @@ could not. Let the room read the quotes — do not read them aloud.
 
 ---
 
-## 4:25 – 5:00 · When · slides 14 · 15
+## 4:25 – 5:00 · When · slides 11 · 12
 
-**▸ Slide 14 — Next, in a real engagement**
+**▸ Slide 11 — Next, in a real engagement**
 
 > "Three things next.
 >
@@ -244,7 +249,7 @@ could not. Let the room read the quotes — do not read them aloud.
 >
 > Repos and the write-up are in the description. Thanks."
 
-**▸ Slide 15 — Run it yourself.** Leave it up while you say the last line, so the
+**▸ Slide 12 — Run it yourself.** Leave it up while you say the last line, so the
 clone command is on screen when the recording ends.
 
 ---
