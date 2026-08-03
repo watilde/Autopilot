@@ -291,6 +291,7 @@ export class Orchestrator {
       issueTitle: r.title,
       issueUrl: r.issueUrl,
       contract,
+      baseBranch: config.PR_BASE_BRANCH ?? null,
     });
 
     try {
@@ -553,6 +554,152 @@ export class Orchestrator {
     );
 
     return { handled: true, reason: 'failure returned to devin', remediationId: updated.id };
+  }
+
+  /**
+   * A reviewer's verdict on a pull request Autopilot opened.
+   *
+   * The rework loop until now answered only to the build, which meant the
+   * system could handle "this does not compile" and had no path at all for
+   * "why not use the existing helper here?". That second question is most of
+   * what review actually is, and leaving it out meant every human judgement
+   * arrived at a session that had already been closed.
+   *
+   * The routing is deliberately narrow. `changes_requested` goes back to the
+   * session that holds the branch. `approved` is recorded and, if CI already
+   * agrees, releases the merge — the two gates are independent and both must
+   * pass. A bare `commented` review does nothing: comments are how people think
+   * out loud on a pull request, and treating every one of them as an
+   * instruction would spend ACUs on somebody's aside.
+   *
+   * Who the reviewer is does not appear anywhere below, and that is the point.
+   * A human and a second Devin session submit the same event, so the loop is
+   * the same either way and the choice of reviewer stays a policy question
+   * rather than a code path.
+   */
+  async handleReview(input: {
+    branch: string;
+    prUrl?: string | null;
+    state: string;
+    body: string | null;
+    reviewer: string | null;
+    reviewUrl: string | null;
+  }): Promise<{ handled: boolean; reason: string; remediationId?: number }> {
+    const r = this.findByBranchOrPr(input.branch, input.prUrl ?? null);
+    if (!r) return { handled: false, reason: 'no remediation matches this branch' };
+
+    const log = logger.child({ remediation: r.id, issue: r.issueNumber, branch: input.branch });
+    const category = r.category ?? 'unknown';
+    const verdict = input.state.toLowerCase();
+    const reviewer = input.reviewer ?? 'a reviewer';
+
+    if (verdict === 'approved') {
+      this.store.appendEvent({
+        remediationId: r.id,
+        issueNumber: r.issueNumber,
+        type: 'review.approved',
+        detail: { reviewer, reviewUrl: input.reviewUrl },
+      });
+      metrics.reviews.inc({ verdict: 'approved', category });
+      log.info({ reviewer }, 'pull request approved by a reviewer');
+
+      // Approval does not override the build. If CI has not passed, this
+      // returns "ci has not passed" and the merge waits for it — a reviewer
+      // who has not read the failing run is not evidence that it passes.
+      const merge = await this.requestMergeIfEligible(this.store.get(r.id)!);
+      return {
+        handled: true,
+        reason: merge.requested ? 'approved; merge requested' : `approved; ${merge.reason}`,
+        remediationId: r.id,
+      };
+    }
+
+    if (verdict !== 'changes_requested') {
+      return { handled: false, reason: `review state ${verdict} needs no action`, remediationId: r.id };
+    }
+
+    if (!r.devinSessionId) {
+      return { handled: false, reason: 'remediation has no session to revise', remediationId: r.id };
+    }
+
+    if (r.reviewReworks >= config.MAX_REVIEW_REWORKS) {
+      metrics.reviews.inc({ verdict: 'escalated', category });
+      log.warn({ reviewReworks: r.reviewReworks }, 'review rework cap reached, escalating');
+      await this.github.addLabels(r.issueNumber, ['autopilot:needs-human']);
+      await this.github.comment(
+        r.issueNumber,
+        [
+          '### 🙋 Autopilot is escalating this to a human',
+          '',
+          `A reviewer has requested changes ${r.reviewReworks + 1} times on ${r.prUrl ?? 'the pull request'},`,
+          `and Devin has already been given ${r.reviewReworks} revision(s). Repeated change`,
+          'requests usually mean the contract did not say something it needed to, which is a',
+          'question for a person rather than another ACU-funded attempt.',
+          '',
+          input.reviewUrl ? `Latest review: ${input.reviewUrl}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n'),
+      );
+      return { handled: true, reason: 'review rework cap reached; escalated', remediationId: r.id };
+    }
+
+    const attempt = this.store.incrementReviewReworks(r.id);
+    this.store.appendEvent({
+      remediationId: r.id,
+      issueNumber: r.issueNumber,
+      type: 'review.changes_requested',
+      detail: { reviewer, reviewUrl: input.reviewUrl, attempt },
+    });
+
+    await this.devin.sendMessage(
+      r.devinSessionId,
+      [
+        `${reviewer} requested changes on the pull request you opened for issue #${r.issueNumber}.`,
+        '',
+        'Address the review on the same branch (`' + input.branch + '`) and push. Do not open a',
+        'replacement pull request, and do not resolve the comments by removing the code they',
+        'are about. The contract in the issue still governs: if the review asks for something',
+        'the contract forbids, or for a change outside the files it names, say so on the pull',
+        'request instead of doing it.',
+        '',
+        input.reviewUrl ? `Review: ${input.reviewUrl}` : '',
+        '',
+        input.body ? ['```', input.body, '```'].join('\n') : '_The review left no body text._',
+      ]
+        .filter((l) => l !== '')
+        .join('\n'),
+    );
+
+    // Back to non-terminal for the same reason a CI failure is: the work is
+    // genuinely in flight again, and a dashboard reporting success while a
+    // reviewer waits for changes is reporting the wrong thing.
+    const updated = this.store.transition(r.id, 'running', {}, {
+      reason: 'changes requested; returned to devin',
+      reviewUrl: input.reviewUrl,
+      reviewer,
+      reviewAttempt: attempt,
+    });
+    metrics.reviews.inc({ verdict: 'changes_requested', category });
+    metrics.activeRemediations.set(this.store.countActive());
+
+    log.info({ reviewAttempt: attempt, reviewer }, 'change request returned to devin session');
+    await this.github.comment(
+      r.issueNumber,
+      [
+        `### 🔁 Changes requested — Devin is revising (attempt ${attempt} of ${config.MAX_REVIEW_REWORKS})`,
+        '',
+        `${reviewer} requested changes on the pull request. The review has been sent back to`,
+        'the same Devin session, which still holds the context of the change it made, so the',
+        'revision happens on the same branch.',
+        '',
+        input.reviewUrl ? `Review: ${input.reviewUrl}` : '',
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    );
+
+    return { handled: true, reason: 'change request returned to devin', remediationId: updated.id };
   }
 
   /**

@@ -112,6 +112,56 @@ describe('workflow_run routing', () => {
   });
 });
 
+describe('pull_request_review routing', () => {
+  const pr = {
+    number: 7,
+    html_url: 'https://github.com/watilde/superset/pull/7',
+    state: 'open',
+    head: { ref: 'autopilot/sec-001-issue-4242' },
+  };
+
+  it('ignores a review on a branch Autopilot does not own', async () => {
+    const res = await post('pull_request_review', {
+      action: 'submitted',
+      review: { state: 'changes_requested', body: 'no' },
+      pull_request: { ...pr, head: { ref: 'feature/someone-else' } },
+    });
+    expect(res.statusCode).toBe(202);
+    expect(res.json()).toMatchObject({ ignored: expect.stringContaining('autopilot') });
+  });
+
+  /**
+   * A review is edited and dismissed as well as submitted. Only the submission
+   * is a verdict; the others would re-send work that was already sent.
+   */
+  it('ignores a review that was edited rather than submitted', async () => {
+    const res = await post('pull_request_review', {
+      action: 'edited',
+      review: { state: 'changes_requested', body: 'no' },
+      pull_request: pr,
+    });
+    expect(res.json()).toMatchObject({ ignored: expect.stringContaining('submitted') });
+  });
+
+  it('routes a submitted review on an autopilot branch into the loop', async () => {
+    const res = await post('pull_request_review', {
+      action: 'submitted',
+      review: {
+        state: 'changes_requested',
+        body: 'use the existing helper',
+        html_url: 'https://github.com/watilde/superset/pull/7#pullrequestreview-1',
+        user: { login: 'a-human' },
+      },
+      pull_request: pr,
+    });
+
+    // No remediation exists for issue 4242, so the loop declines it — but it
+    // reached the loop, which is what this test is about.
+    expect(res.statusCode).toBe(202);
+    expect(res.json()).toMatchObject({ handled: false, reason: expect.stringMatching(/no remediation/) });
+  });
+});
+
 describe('pull_request routing', () => {
   it('records a merge against the remediation that opened it', async () => {
     const { SEED_ISSUES } = await import('../scripts/issues.js');

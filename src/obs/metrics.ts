@@ -81,6 +81,19 @@ export const reworks = new Counter({
 });
 
 /**
+ * Review verdicts on pull requests Autopilot opened. Separate from `reworks`
+ * because a change request is not a build failure: one says the agent was
+ * wrong, the other says a reviewer wanted something the contract never asked
+ * for, and an alert that cannot tell them apart pages the wrong person.
+ */
+export const reviews = new Counter({
+  name: 'autopilot_reviews_total',
+  help: 'Pull request review verdicts, by disposition',
+  labelNames: ['verdict', 'category'] as const,
+  registers: [registry],
+});
+
+/**
  * Auto-merge attempts by disposition. Counted where Autopilot acts, never where
  * a merge lands — `autopilot_pull_requests_total{state="merged"}` is the one
  * that says the change actually shipped, and the gap between `requested` here

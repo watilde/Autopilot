@@ -1051,3 +1051,147 @@ describe('pull request outcomes', () => {
     ).toBeNull();
   });
 });
+
+/**
+ * The half of review that is not CI.
+ *
+ * CI answers a question the contract already asked. A reviewer asks one it
+ * did not, which is why this loop is counted, capped and escalated separately —
+ * and why the reviewer's identity never appears in the routing. A person and a
+ * second agent submit the same event.
+ */
+describe('review loop', () => {
+  async function shipped(autoMerge?: AutoMergePolicy) {
+    const h = harness(
+      new DevinMockClient({ pollsUntilTerminal: 1, forceOutcome: 'fixed' }),
+      autoMerge,
+    );
+    await h.orchestrator.intake(issue(), 'test');
+    await h.orchestrator.dispatch();
+    await h.orchestrator.reconcile();
+    await h.orchestrator.reconcile();
+    const r = h.store.listAll()[0]!;
+    expect(r.state).toBe('succeeded');
+    return { ...h, remediation: r, branch: `autopilot/sec-001-issue-${r.issueNumber}` };
+  }
+
+  const review = (state: string, body: string | null = 'use the existing helper') => ({
+    state,
+    body,
+    reviewer: 'a-human',
+    reviewUrl: 'https://github.com/watilde/superset/pull/1#pullrequestreview-1',
+  });
+
+  it('sends a change request back to the session and reopens the work', async () => {
+    const h = await shipped();
+
+    const result = await h.orchestrator.handleReview({
+      branch: h.branch,
+      ...review('changes_requested'),
+    });
+
+    expect(result.handled).toBe(true);
+    const r = h.store.get(h.remediation.id)!;
+    expect(r.reviewReworks).toBe(1);
+    // Counted apart from CI: nothing here says the agent's own build was wrong.
+    expect(r.reworks).toBe(0);
+    expect(r.state).toBe('running');
+
+    const sent = h.devin.messages.at(-1)!;
+    expect(sent.sessionId).toBe(r.devinSessionId);
+    expect(sent.message).toMatch(/requested changes/);
+    expect(sent.message).toContain(h.branch);
+    expect(sent.message).toContain('use the existing helper');
+  });
+
+  /**
+   * Comments are how people think out loud on a pull request. Treating each one
+   * as an instruction would spend ACUs on somebody's aside.
+   */
+  it('ignores a review that only comments', async () => {
+    const h = await shipped();
+
+    const result = await h.orchestrator.handleReview({
+      branch: h.branch,
+      ...review('commented', 'nice'),
+    });
+
+    expect(result.handled).toBe(false);
+    const r = h.store.get(h.remediation.id)!;
+    expect(r.reviewReworks).toBe(0);
+    expect(r.state).toBe('succeeded');
+    expect(h.devin.messages).toHaveLength(0);
+  });
+
+  /**
+   * The two gates are independent. A reviewer who has not read the failing run
+   * is not evidence that it passes, so approval alone must not merge.
+   */
+  it('does not merge on approval alone when CI has not passed', async () => {
+    // Auto-merge on, so the gate that refuses is the build rather than the
+    // policy — otherwise this test passes for the wrong reason.
+    const h = await shipped({ enabled: true, categories: ['code-quality'] });
+
+    const result = await h.orchestrator.handleReview({
+      branch: h.branch,
+      ...review('approved', null),
+    });
+
+    expect(result.handled).toBe(true);
+    expect(result.reason).toMatch(/ci has not passed/);
+    expect(h.store.get(h.remediation.id)!.mergeRequestedAt).toBeNull();
+  });
+
+  it('requests the merge when an approval lands on a build CI already passed', async () => {
+    const h = harness(
+      new DevinMockClient({ pollsUntilTerminal: 1, forceOutcome: 'fixed' }),
+      { enabled: true, categories: ['security', 'code-quality'] },
+    );
+    await h.orchestrator.intake(issue({ number: 202 }), 'test');
+    await h.orchestrator.dispatch();
+    await h.orchestrator.reconcile();
+    await h.orchestrator.reconcile();
+    const r0 = h.store.listAll()[0]!;
+    const branch = `autopilot/sec-001-issue-${r0.issueNumber}`;
+
+    h.store.recordCi(r0.id, 'passed');
+    // `security` is refused unconditionally, so this asserts the approval path
+    // reaches the merge gate rather than that it opens it.
+    const result = await h.orchestrator.handleReview({ branch, ...review('approved', null) });
+
+    expect(result.handled).toBe(true);
+    expect(result.reason).toMatch(/never merge unattended/);
+  });
+
+  /**
+   * Repeated change requests usually mean the contract did not say something it
+   * needed to. That is a question for a person, not for another paid attempt.
+   */
+  it('escalates to a human once the review cap is reached', async () => {
+    const h = await shipped();
+    const ask = () =>
+      h.orchestrator.handleReview({ branch: h.branch, ...review('changes_requested') });
+
+    await ask();
+    await ask(); // MAX_REVIEW_REWORKS
+    const messagesBeforeCap = h.devin.messages.length;
+
+    const capped = await ask();
+    expect(capped.reason).toMatch(/cap reached/);
+    // Nothing further is sent: the point of the cap is to stop spending.
+    expect(h.devin.messages).toHaveLength(messagesBeforeCap);
+    expect(h.store.get(h.remediation.id)!.reviewReworks).toBe(2);
+  });
+
+  it('ignores a review on a branch it does not own', async () => {
+    const h = await shipped();
+
+    const result = await h.orchestrator.handleReview({
+      branch: 'feature/someone-elses-work',
+      ...review('changes_requested'),
+    });
+
+    expect(result.handled).toBe(false);
+    expect(h.devin.messages).toHaveLength(0);
+  });
+});

@@ -94,6 +94,31 @@ const schema = z.preprocess(
      */
     MAX_CI_REWORKS: int(2),
     /**
+     * How many times a reviewer's change request may be handed back to the
+     * same session before Autopilot stops and asks for a human.
+     *
+     * Counted apart from MAX_CI_REWORKS because the two are different
+     * failures. A red build is the contract's own commands disagreeing, and
+     * the fix is mechanical. A change request is a reviewer disagreeing about
+     * something the contract left open — and an agent that cannot satisfy a
+     * reviewer in two passes is usually being asked for something nobody
+     * wrote down, which is a contract problem, not an agent problem.
+     */
+    MAX_REVIEW_REWORKS: int(2),
+    /**
+     * Branch that pull requests are opened against. Unset means the
+     * repository's default branch, which is the right answer everywhere except
+     * a demonstration.
+     *
+     * It exists because Devin's tooling refuses, unconditionally, to merge into
+     * `main`/`master` — a guardrail no configuration here can see coming and
+     * none should try to defeat. When it declined, it named the one thing that
+     * does work: retarget the pull request at another base. So a run that ends
+     * in an actual merge needs an integration branch, and without this the last
+     * step of the chain cannot be shown at all.
+     */
+    PR_BASE_BRANCH: z.string().optional(),
+    /**
      * Whether a pull request whose CI has gone green may be merged with no human
      * in the loop.
      *

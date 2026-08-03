@@ -68,6 +68,13 @@ export interface AnalyticsSnapshot {
   /** What the pull request's own CI said, and how often Devin self-corrected. */
   ci: { passed: number; failed: number; pending: number; reworks: number };
   /**
+   * What reviewers said, kept out of `ci` on purpose. CI re-runs commands the
+   * contract already specified; a reviewer asks for something it did not. Both
+   * send work back, but folding them together would let a reviewer's change of
+   * mind inflate a figure that claims the agent fixed its own mistakes.
+   */
+  reviews: { approved: number; changesRequested: number; revisions: number };
+  /**
    * `reported` is false when the provider returned no ACU figures at all. That
    * is not the same as "this was free", and the difference matters when the
    * number is being used to argue a unit cost, so the rates are null rather
@@ -131,6 +138,7 @@ export function buildAnalytics(store: Store): AnalyticsSnapshot {
       SUM(CASE WHEN ci_status = 'failed' THEN 1 ELSE 0 END)              AS ci_failed,
       SUM(CASE WHEN ci_status = 'pending' THEN 1 ELSE 0 END)             AS ci_pending,
       COALESCE(SUM(reworks), 0)                                         AS reworks,
+      COALESCE(SUM(review_reworks), 0)                                  AS review_reworks,
       SUM(CASE WHEN state = 'succeeded' AND (pr_url IS NULL OR pr_url = '') THEN 1 ELSE 0 END)
                                                                         AS false_positives,
       COALESCE(SUM(acu_used), 0)                                        AS acu_total
@@ -273,6 +281,15 @@ export function buildAnalytics(store: Store): AnalyticsSnapshot {
   const deduplicated = num(
     store.query(`SELECT COUNT(*) AS c FROM events WHERE type = 'intake.deduplicated'`)[0]?.c,
   );
+
+  // Review verdicts come from the log rather than from a column: a pull request
+  // can be approved more than once, and the last verdict is not the history.
+  const reviewRow =
+    store.query(`
+      SELECT SUM(CASE WHEN type = 'review.approved' THEN 1 ELSE 0 END)          AS approved,
+             SUM(CASE WHEN type = 'review.changes_requested' THEN 1 ELSE 0 END) AS changes
+        FROM events
+    `)[0] ?? {};
   const mergeRow =
     store.query(`
       SELECT SUM(CASE WHEN merge_requested_at IS NOT NULL THEN 1 ELSE 0 END) AS requested,
@@ -317,6 +334,11 @@ export function buildAnalytics(store: Store): AnalyticsSnapshot {
       failed: num(totalsRow.ci_failed),
       pending: num(totalsRow.ci_pending),
       reworks: num(totalsRow.reworks),
+    },
+    reviews: {
+      approved: num(reviewRow.approved),
+      changesRequested: num(reviewRow.changes),
+      revisions: num(totalsRow.review_reworks),
     },
     acu: {
       total: acuTotal,

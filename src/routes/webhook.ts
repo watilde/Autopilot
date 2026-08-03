@@ -36,6 +36,13 @@ interface GhPayload {
   comment?: { body?: string; user?: { login?: string } };
   repository?: { full_name?: string };
   pull_request?: GhPullRequest;
+  /** `state` is approved | changes_requested | commented | dismissed. */
+  review?: {
+    state?: string;
+    body?: string | null;
+    html_url?: string;
+    user?: { login?: string };
+  };
   workflow_run?: {
     id: number;
     name?: string;
@@ -122,6 +129,35 @@ export function registerWebhookRoutes(
         conclusion: run.conclusion ?? 'unknown',
         runId: run.id,
         runUrl: run.html_url ?? null,
+      });
+      metrics.webhookDeliveries.inc({
+        event,
+        action,
+        result: result.handled ? 'accepted' : 'skipped',
+      });
+      return reply.code(202).send({ ok: true, ...result });
+    }
+
+    // --- pull_request_review: the human half of the loop -----------------------
+    // CI answers "does it build". A reviewer answers "is this the change we
+    // wanted", and until this existed that answer had nowhere to go: the
+    // session was closed by the time anyone read the diff.
+    if (event === 'pull_request_review') {
+      const review = payload.review;
+      const pr = payload.pull_request;
+      const branch = pr?.head?.ref ?? '';
+      if (!review || action !== 'submitted' || !branch.startsWith('autopilot/')) {
+        metrics.webhookDeliveries.inc({ event, action, result: 'ignored' });
+        return reply.code(202).send({ ok: true, ignored: 'not a submitted autopilot review' });
+      }
+
+      const result = await orchestrator.handleReview({
+        branch,
+        prUrl: pr?.html_url ?? null,
+        state: review.state ?? '',
+        body: review.body ?? null,
+        reviewer: review.user?.login ?? null,
+        reviewUrl: review.html_url ?? null,
       });
       metrics.webhookDeliveries.inc({
         event,

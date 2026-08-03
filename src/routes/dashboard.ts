@@ -242,6 +242,17 @@ const PAGE = String.raw`<!doctype html>
     <div class="verdict" id="verify"></div>
   </div>
 
+  <h2 id="rev-h">Review</h2>
+  <div class="card" id="rev-card">
+    <p class="lede">
+      CI answers <strong>does it build</strong>. A reviewer answers <strong>is this the change we
+      wanted</strong> — a question the contract deliberately leaves open. Change requests go back
+      to the session that holds the branch, capped, and the reviewer may be a person or another
+      agent: the loop does not know which.
+    </p>
+    <div class="verdict" id="reviews"></div>
+  </div>
+
   <h2>What the system refused to do</h2>
   <div class="card">
     <p class="lede">
@@ -411,6 +422,20 @@ async function refresh() {
        a.ci.failed ? "warn" : ""),
     vd(t.falsePositives, "Success with no PR", "reported fixed with nothing to show for it",
        t.falsePositives ? "warn" : ""),
+  ].join("");
+
+  // Hidden until a review happens: an empty card here would imply the loop is
+  // idle when it may simply never have been used.
+  const anyReview = a.reviews.approved + a.reviews.changesRequested + a.reviews.revisions;
+  const showRev = anyReview ? "" : "none";
+  document.getElementById("rev-h").style.display = showRev;
+  document.getElementById("rev-card").style.display = showRev;
+  document.getElementById("reviews").innerHTML = [
+    vd(a.reviews.approved, "Approved", "a reviewer signed off — the merge still waits for CI",
+       a.reviews.approved ? "ok" : ""),
+    vd(a.reviews.changesRequested, "Changes requested",
+       "a reviewer wanted something the contract did not specify", ""),
+    vd(a.reviews.revisions, "Revisions", "sent back to the same session, counted apart from CI self-corrections", ""),
   ].join("");
 
   document.getElementById("refusals").innerHTML = [

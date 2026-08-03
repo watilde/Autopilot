@@ -215,10 +215,11 @@ screen.
 > label, which is a proxy for risk rather than a measure of it. Diff size, blast
 > radius, whether the change stayed inside the modules the contract named.
 >
-> **Human review into the loop, not just CI.** The rework loop answers to the
-> build today. `pull_request_review` comments could go back into the same
-> session, so a reviewer's 'why not use X here?' gets answered in-session
-> instead of in a meeting.
+> **A reviewer who is not us.** `pull_request_review` now goes back into the
+> same session, so a reviewer's 'why not use X here?' is answered in-session
+> instead of in a meeting. The open question is who submits it — an agent
+> reviewing an agent is a second opinion, not independent evidence, and only CI
+> is the latter.
 >
 > **Contracts from scanners.** Every issue here was hand-written and verified.
 > The intake does not care where an issue came from — Dependabot, CodeQL,

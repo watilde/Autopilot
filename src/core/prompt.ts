@@ -18,12 +18,21 @@ export interface PromptInput {
   issueTitle: string;
   issueUrl: string;
   contract: RemediationContract;
+  /**
+   * Branch the pull request is opened against. Omitted means the repository's
+   * default branch — the right answer in a real repository, and the one thing
+   * Devin's tooling will not merge into.
+   */
+  baseBranch?: string | null;
 }
 
 export function buildPrompt(input: PromptInput): string {
   const { owner, repo, issueNumber, issueTitle, issueUrl, contract } = input;
   const branch = branchFor(contract, issueNumber);
   const repoSlug = `${owner}/${repo}`;
+  // Named explicitly when configured, so the instruction is unambiguous rather
+  // than a phrase the session has to resolve against the repository.
+  const base = input.baseBranch ? `\`${input.baseBranch}\`` : 'the default branch';
 
   const targets = contract.targets.map((t) => `  - ${t}`).join('\n');
   const acceptance = contract.acceptance.map((a, i) => `  ${i + 1}. ${a}`).join('\n');
@@ -49,7 +58,7 @@ summarise or predict it.
 ${verify}
 
 # Procedure
-1. Clone ${repoSlug} and create branch \`${branch}\` from the default branch.
+1. Clone ${repoSlug} and create branch \`${branch}\` from ${base}.
 2. Read the target files before editing. Confirm the defect is actually present
    and still matches the description. Line numbers may have drifted; locate the
    code by content, not by line number.
@@ -62,7 +71,7 @@ ${verify}
    If you cannot make them pass, return status "blocked" and explain why.
 6. Match the surrounding code's style. Do not reformat untouched lines, bump
    unrelated dependencies, or "improve" adjacent code.
-7. Open a pull request from \`${branch}\` against the default branch. Title it
+7. Open a pull request from \`${branch}\` against ${base}. Title it
    \`[${contract.id}] ${issueTitle}\`. In the body, explain the root cause, the
    fix, and the verification output, and include the line \`Closes #${issueNumber}\`.
 

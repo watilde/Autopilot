@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS remediations (
   pr_merged_at       TEXT,
   ci_status          TEXT,
   reworks            INTEGER NOT NULL DEFAULT 0,
+  review_reworks     INTEGER NOT NULL DEFAULT 0,
   merge_requested_at TEXT,
   merge_escalated_at TEXT,
   structured_output  TEXT,
@@ -96,6 +97,7 @@ const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
   ['remediations', 'ci_run_id', 'INTEGER'],
   ['remediations', 'merge_requested_at', 'TEXT'],
   ['remediations', 'merge_escalated_at', 'TEXT'],
+  ['remediations', 'review_reworks', 'INTEGER NOT NULL DEFAULT 0'],
 ];
 
 type Row = Record<string, unknown>;
@@ -122,6 +124,7 @@ function toRemediation(r: Row): Remediation {
     ciStatus: (r.ci_status as Remediation['ciStatus']) ?? null,
     ciRunId: (r.ci_run_id as number) ?? null,
     reworks: (r.reworks as number) ?? 0,
+    reviewReworks: (r.review_reworks as number) ?? 0,
     mergeRequestedAt: (r.merge_requested_at as string) ?? null,
     mergeEscalatedAt: (r.merge_escalated_at as string) ?? null,
     structuredOutput: r.structured_output ? safeParse(r.structured_output as string) : null,
@@ -511,6 +514,24 @@ export class Store {
       .prepare('UPDATE remediations SET reworks = reworks + 1, updated_at = ? WHERE id = ?')
       .run(nowIso(), id);
     return this.get(id)?.reworks ?? 0;
+  }
+
+  /**
+   * Count a review-driven revision, and return the new total.
+   *
+   * Kept apart from `reworks` rather than folded into it. A red build and a
+   * change request are both "handed back", but only one of them means the
+   * agent got something wrong: CI re-runs commands the contract already
+   * specified, while a reviewer is asking for something the contract did not
+   * say. Adding them together would make the self-correction figure — which is
+   * a claim about the agent fixing its own mistakes — quietly include the
+   * times a human moved the goalposts.
+   */
+  incrementReviewReworks(id: number): number {
+    this.db
+      .prepare('UPDATE remediations SET review_reworks = review_reworks + 1, updated_at = ? WHERE id = ?')
+      .run(nowIso(), id);
+    return this.get(id)?.reviewReworks ?? 0;
   }
 
   /**

@@ -152,6 +152,21 @@ branch. Capped by `MAX_CI_REWORKS`: an agent that cannot fix its own build twice
 is stuck on something the contract did not anticipate, so the issue gets labelled
 `autopilot:needs-human` rather than looping on ACUs.
 
+**A change request goes back to the agent too.** CI answers *does it build*; a
+reviewer answers *is this the change we wanted*, which is a question the contract
+deliberately leaves open. A submitted `changes_requested` review on an
+`autopilot/*` branch is sent into the same session, on the same branch, and the
+work returns to `running` — so a dashboard cannot go on reporting success while a
+reviewer waits. Counted apart from CI (`MAX_REVIEW_REWORKS`, `review_reworks`),
+because folding the two together would let a reviewer's change of mind inflate a
+figure that claims the agent fixed its own mistakes. An `approved` review
+releases the merge gate but does not open it: the build still has to be green,
+since a reviewer who has not read the failing run is not evidence that it passes.
+
+Who the reviewer is never appears in the routing. A person and a second agent
+submit the same event, so the choice stays a policy question rather than a code
+path.
+
 **A green pull request can merge itself, and the gate is narrow.** Off by
 default (`AUTO_MERGE`), because every other action here is reversible by a
 reviewer who has not looked yet and this one is not. When it is on, a pull
@@ -630,7 +645,7 @@ curl -X POST localhost:8080/api/remediations/1/reply \
 
 Two layers, because they fail differently.
 
-**This orchestrator** — `npm test`, 161 tests, no network:
+**This orchestrator** — `npm test`, 170 tests, no network:
 
 ```bash
 npm test
@@ -715,6 +730,7 @@ scripts/
   seed-issues.ts     create labels + issues
   devin-setup.ts     provision the playbook and the scheduled audit
   simulate.ts        end-to-end demo driver
+  scenario.ts        one issue through every path, a step at a time
   report.ts          terminal report
   sync-labels.ts     repair labels that drifted from the record
 docs/
