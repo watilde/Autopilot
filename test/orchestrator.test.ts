@@ -1525,3 +1525,145 @@ describe('agent review verdicts', () => {
     expect(r.reviewVerdictSource).toBe('github');
   });
 });
+
+/**
+ * The poll behind the review webhook.
+ *
+ * This deployment's hook was never subscribed to `pull_request_review` and its
+ * tunnel had died, so a human approval would have been invisible with nothing
+ * anywhere reporting a problem. A review a person can see and the system cannot
+ * is worse than no review loop, because it looks like one.
+ */
+describe('polling for reviews', () => {
+  class ReviewingGitHub extends RecordingGitHub {
+    reviews: Array<{
+      id: number;
+      state: string;
+      body: string | null;
+      user: string | null;
+      htmlUrl: string;
+      submittedAt: string | null;
+    }> = [];
+
+    override async listReviews() {
+      return this.reviews;
+    }
+    // RecordingGitHub reports `enabled`, so dispatch re-reads the issue and
+    // needs the real contract back — otherwise the remediation fails before it
+    // ever has a pull request to review.
+    override async getIssue(number: number) {
+      return {
+        number,
+        title: 'Unsafe YAML deserialization',
+        body: SEED_ISSUES[0]!.body,
+        htmlUrl: '',
+        labels: this.labelsOn(number),
+        state: 'open',
+      };
+    }
+    // Left inert so the poll is the only thing under test.
+    override async latestWorkflowRun() {
+      return null;
+    }
+    override async getPullRequest() {
+      return null;
+    }
+    override async findPullRequestForBranch() {
+      return null;
+    }
+  }
+
+  const review = (id: number, state: string, body = 'use the helper') => ({
+    id,
+    state,
+    body,
+    user: 'a-human',
+    htmlUrl: `https://github.com/watilde/superset/pull/9#pullrequestreview-${id}`,
+    submittedAt: null,
+  });
+
+  async function shipped(gh: ReviewingGitHub) {
+    const h = harness(
+      new DevinMockClient({ pollsUntilTerminal: 1, forceOutcome: 'fixed' }),
+      undefined,
+      gh,
+    );
+    await h.orchestrator.intake(issue(), 'test');
+    await h.orchestrator.dispatch();
+    await h.orchestrator.reconcile();
+    await h.orchestrator.reconcile();
+    const r = h.store.listAll()[0]!;
+    h.store.recordPullRequest(r.id, { state: 'open' });
+    return { ...h, id: r.id };
+  }
+
+  it('picks up a change request nobody delivered', async () => {
+    const gh = new ReviewingGitHub({ 101: ['autopilot'] });
+    const h = await shipped(gh);
+    gh.reviews = [review(1, 'changes_requested')];
+
+    const handled = await h.orchestrator.syncReviews();
+
+    expect(handled).toBe(1);
+    const r = h.store.get(h.id)!;
+    expect(r.reviewReworks).toBe(1);
+    expect(r.state).toBe('running');
+    expect(h.devin.messages.at(-1)!.message).toContain('use the helper');
+  });
+
+  /** The guard `ciRunId` is for builds: a poll must not act on one review twice. */
+  it('acts on a review once, however often it is polled', async () => {
+    const gh = new ReviewingGitHub({ 101: ['autopilot'] });
+    const h = await shipped(gh);
+    gh.reviews = [review(1, 'changes_requested')];
+
+    await h.orchestrator.syncReviews();
+    await h.orchestrator.syncReviews();
+    await h.orchestrator.syncReviews();
+
+    expect(h.store.get(h.id)!.reviewReworks).toBe(1);
+    expect(h.devin.messages).toHaveLength(1);
+  });
+
+  it('records an approval it polled as coming from GitHub', async () => {
+    const gh = new ReviewingGitHub({ 101: ['autopilot'] });
+    const h = await shipped(gh);
+    gh.reviews = [review(2, 'approved', null)];
+
+    await h.orchestrator.syncReviews();
+
+    const r = h.store.get(h.id)!;
+    expect(r.reviewVerdict).toBe('approved');
+    // Polled or delivered, it is the same review on the same pull request.
+    expect(r.reviewVerdictSource).toBe('github');
+  });
+
+  /** Comments are not instructions, but they must not be re-read forever. */
+  it('skips a comment-only review and still advances past it', async () => {
+    const gh = new ReviewingGitHub({ 101: ['autopilot'] });
+    const h = await shipped(gh);
+    gh.reviews = [review(3, 'commented', 'nice')];
+
+    const handled = await h.orchestrator.syncReviews();
+
+    expect(handled).toBe(0);
+    expect(h.store.get(h.id)!.lastReviewId).toBe(3);
+    expect(h.devin.messages).toHaveLength(0);
+  });
+
+  /**
+   * Everything after a change request is a verdict on a revision that has not
+   * happened yet.
+   */
+  it('stops at a change request rather than applying later reviews to work that has not been redone', async () => {
+    const gh = new ReviewingGitHub({ 101: ['autopilot'] });
+    const h = await shipped(gh);
+    gh.reviews = [review(4, 'changes_requested'), review(5, 'approved', null)];
+
+    await h.orchestrator.syncReviews();
+
+    const r = h.store.get(h.id)!;
+    expect(r.reviewReworks).toBe(1);
+    expect(r.reviewVerdict).toBeNull();
+  });
+});

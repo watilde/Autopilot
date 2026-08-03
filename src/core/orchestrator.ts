@@ -1363,6 +1363,66 @@ export class Orchestrator {
    * and telling them apart is the difference between a second correction and
    * an infinite resend of the first.
    */
+  /**
+   * Read reviews off the pull requests, for when the webhook does not arrive.
+   *
+   * The same argument that put a poll behind CI: a webhook you never receive is
+   * indistinguishable from one saying nothing happened. Reviews had only the
+   * webhook, and this deployment proved what that costs — the fork's hook was
+   * never subscribed to `pull_request_review` and its tunnel had died, so a
+   * human approval would have been invisible with nothing anywhere reporting a
+   * problem. A review that a person can see on the pull request and the system
+   * cannot is worse than no review loop at all, because it looks like one.
+   *
+   * Routed through `handleReview`, exactly as the webhook is, so there is one
+   * implementation of what a verdict means and no second one to drift.
+   * `lastReviewId` is the guard `ciRunId` is for builds: without it every sweep
+   * would re-send the same change request, once per reconcile interval, for as
+   * long as the review stood.
+   */
+  async syncReviews(): Promise<number> {
+    if (!this.github.enabled) return 0;
+    let handled = 0;
+
+    for (const r of this.store.listAwaitingPullRequestOutcome()) {
+      const prNumber = parsePullRequestNumber(r.prUrl);
+      const branch = this.branchOf(r);
+      if (!prNumber || !branch) continue;
+
+      const reviews = await this.github.listReviews(prNumber);
+      const fresh = reviews.filter((rev) => rev.id > (r.lastReviewId ?? 0));
+      if (!fresh.length) continue;
+
+      // Advance the marker over everything seen, including the states this
+      // loop ignores. A comment-only review is not an instruction, but it is
+      // also not a reason to re-read it forever.
+      this.store.setLastReviewId(r.id, fresh[fresh.length - 1]!.id);
+
+      for (const rev of fresh) {
+        if (rev.state !== 'approved' && rev.state !== 'changes_requested') continue;
+
+        const result = await this.handleReview({
+          branch,
+          prUrl: r.prUrl,
+          state: rev.state,
+          body: rev.body,
+          reviewer: rev.user,
+          reviewUrl: rev.htmlUrl,
+        });
+        if (result.handled) handled++;
+        logger.info(
+          { remediation: r.id, issue: r.issueNumber, review: rev.id, state: rev.state },
+          'review picked up by polling',
+        );
+        // A change request reopens the work; anything after it in the same
+        // sweep would be acting on a revision that has not happened yet.
+        if (rev.state === 'changes_requested') break;
+      }
+    }
+
+    return handled;
+  }
+
   async syncCiStatus(): Promise<number> {
     if (!this.github.enabled) return 0;
     let handled = 0;
@@ -1784,6 +1844,9 @@ export class Orchestrator {
       await this.adoptOrphanedPullRequests();
       await this.syncPullRequests();
       await this.syncCiStatus();
+      // Reviews before the agent's own verdict: a human who has already spoken
+      // on the pull request outranks a session's report about itself.
+      await this.syncReviews();
       // After CI, because a reviewing session is only dispatched once the build
       // is green, and before the merge escalation, so an approval that arrived
       // this tick is acted on rather than counted as an unperformed merge.

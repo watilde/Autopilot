@@ -106,6 +106,8 @@ export interface Remediation {
    * request. Never merge the two — the difference is the argument.
    */
   reviewVerdictSource: 'github' | 'agent' | null;
+  /** Newest review already acted on, so a poll never handles one twice. */
+  lastReviewId: number | null;
   /**
    * When Devin was asked to merge the pull request. A record that we asked,
    * not a claim that it merged — the merge itself is observed from GitHub.

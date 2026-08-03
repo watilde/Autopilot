@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS remediations (
   review_session_id  TEXT,
   review_verdict     TEXT,
   review_verdict_src TEXT,
+  last_review_id     INTEGER,
   merge_requested_at TEXT,
   merge_escalated_at TEXT,
   structured_output  TEXT,
@@ -104,6 +105,7 @@ const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
   ['remediations', 'review_session_id', 'TEXT'],
   ['remediations', 'review_verdict', 'TEXT'],
   ['remediations', 'review_verdict_src', 'TEXT'],
+  ['remediations', 'last_review_id', 'INTEGER'],
 ];
 
 type Row = Record<string, unknown>;
@@ -134,6 +136,7 @@ function toRemediation(r: Row): Remediation {
     reviewSessionId: (r.review_session_id as string) ?? null,
     reviewVerdict: (r.review_verdict as Remediation['reviewVerdict']) ?? null,
     reviewVerdictSource: (r.review_verdict_src as Remediation['reviewVerdictSource']) ?? null,
+    lastReviewId: (r.last_review_id as number) ?? null,
     mergeRequestedAt: (r.merge_requested_at as string) ?? null,
     mergeEscalatedAt: (r.merge_escalated_at as string) ?? null,
     structuredOutput: r.structured_output ? safeParse(r.structured_output as string) : null,
@@ -563,6 +566,19 @@ export class Store {
       .prepare('UPDATE remediations SET review_session_id = ?, updated_at = ? WHERE id = ?')
       .run(sessionId, nowIso(), id);
     return this.get(id)!;
+  }
+
+  /**
+   * Remember the newest review already acted on, so a poll cannot act twice.
+   *
+   * The same job `ci_run_id` does for builds: without it, every sweep would
+   * re-send the same change request to the same session, once per reconcile
+   * interval, for as long as the review stands.
+   */
+  setLastReviewId(id: number, reviewId: number): void {
+    this.db
+      .prepare('UPDATE remediations SET last_review_id = ?, updated_at = ? WHERE id = ?')
+      .run(reviewId, nowIso(), id);
   }
 
   /** Remediations with a reviewing session that has not yet reported. */

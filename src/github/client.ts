@@ -205,6 +205,50 @@ export class GitHubClient {
    * is indistinguishable from a build that passed, which is not a thing to
    * guess about.
    */
+  /**
+   * Reviews on a pull request, oldest first.
+   *
+   * The polling half of the review loop. A webhook you never receive is
+   * indistinguishable from one that says nothing happened — the same argument
+   * that put a poll behind CI — and reviews had only the webhook. That gap is
+   * not theoretical: this deployment's tunnel died, its `pull_request_review`
+   * subscription was never added, and a human approval would have been
+   * invisible with nothing anywhere reporting a problem.
+   */
+  async listReviews(pullNumber: number): Promise<
+    Array<{
+      id: number;
+      state: string;
+      body: string | null;
+      user: string | null;
+      htmlUrl: string;
+      submittedAt: string | null;
+    }>
+  > {
+    if (!this.octokit) return [];
+    try {
+      const { data } = await this.octokit.pulls.listReviews({
+        owner: this.owner,
+        repo: this.repo,
+        pull_number: pullNumber,
+        per_page: 100,
+      });
+      return data
+        .map((r) => ({
+          id: r.id,
+          state: String(r.state ?? '').toLowerCase(),
+          body: r.body ?? null,
+          user: r.user?.login ?? null,
+          htmlUrl: r.html_url,
+          submittedAt: r.submitted_at ?? null,
+        }))
+        .sort((a, b) => a.id - b.id);
+    } catch (err) {
+      logger.warn({ pullNumber, err: (err as Error).message }, 'failed to list reviews');
+      return [];
+    }
+  }
+
   async latestWorkflowRun(branch: string): Promise<{
     id: number;
     conclusion: string | null;
