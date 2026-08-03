@@ -100,3 +100,46 @@ describe('audit', () => {
     expect((finished!.detail as { filed: number }).filed).toBe(0);
   });
 });
+
+/**
+ * Cancelling a session on Devin's side tells Autopilot nothing: it goes on
+ * reporting `running/waiting_for_user`, which is exactly what a session that
+ * stopped to ask a question reports. There is no way to tell them apart from
+ * the API, so time and an operator are the only two signals available — and
+ * without either, one cancelled audit kills the button forever.
+ */
+describe('an audit that will never finish', () => {
+  it('stops counting an audit that has been in flight too long', async () => {
+    const h = harness(new DevinMockClient({ pollsUntilTerminal: 999 }));
+    await h.audit.dispatch('test');
+    expect(h.audit.inFlight()).toHaveLength(1);
+
+    // Backdate the dispatch past the bound, which is what the clock would do.
+    const [e] = h.store.listEvents(5, 'audit.dispatched');
+    h.store.query(
+      `UPDATE events SET created_at = '2000-01-01T00:00:00.000Z' WHERE id = ${e!.id}`,
+    );
+
+    expect(h.audit.inFlight()).toHaveLength(0);
+    expect((await h.audit.dispatch('test')).dispatched).toBe(true);
+  });
+
+  it('lets an operator give up on it without waiting out the bound', async () => {
+    const h = harness(new DevinMockClient({ pollsUntilTerminal: 999 }));
+    await h.audit.dispatch('test');
+
+    const result = await h.audit.abandon('cancelled on the Devin dashboard');
+
+    expect(result.abandoned).toBe(true);
+    expect(h.audit.inFlight()).toHaveLength(0);
+    // Written off, not erased: the log says it was abandoned and by whom.
+    const [finished] = h.store.listEvents(5, 'audit.finished');
+    expect((finished!.detail as { state: string }).state).toBe('abandoned');
+    expect((await h.audit.dispatch('test')).dispatched).toBe(true);
+  });
+
+  it('says so when there is nothing to give up on', async () => {
+    const h = harness();
+    expect((await h.audit.abandon('nothing')).abandoned).toBe(false);
+  });
+});

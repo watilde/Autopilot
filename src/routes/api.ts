@@ -156,6 +156,21 @@ export function registerApiRoutes(
     return { inFlight: audit.inFlight() };
   });
 
+  /**
+   * Give up on the audit in flight.
+   *
+   * Cancelling a session on Devin's side tells Autopilot nothing — it goes on
+   * reporting `running/waiting_for_user`, which is also what a session that
+   * stopped to ask a question reports. Without this, whoever just cancelled it
+   * has to wait out AUDIT_TIMEOUT_MS before the button works again.
+   */
+  app.delete('/api/audit', async (req, reply) => {
+    if (!audit) return reply.code(501).send({ error: 'no audit runner configured' });
+    const { reason } = (req.body ?? {}) as { reason?: string };
+    const result = await audit.abandon(reason ?? 'abandoned by operator');
+    return reply.code(result.abandoned ? 200 : 409).send(result);
+  });
+
   app.post('/api/scan', async () => {
     const result = await scanner.scan();
     void orchestrator.tick();

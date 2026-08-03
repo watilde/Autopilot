@@ -630,7 +630,10 @@ async function refreshAudit() {
         ? 'started ' + new Date(running.dispatchedAt).toLocaleTimeString() +
           (running.url
             ? ' · <a href="' + esc(running.url) + '" target="_blank" rel="noopener">session</a>'
-            : '')
+            : '') +
+          // Cancelling on Devin's side is invisible from here, so the operator
+          // needs a way to say so themselves rather than wait out the timeout.
+          ' · <a href="#" id="audit-give-up">give up on it</a>'
         : 'One at a time — two audits reading the same repository file the same defects twice.') +
     '</span>';
 
@@ -647,6 +650,12 @@ async function refreshAudit() {
 }
 
 document.getElementById("audit").addEventListener("click", async e => {
+  if (e.target.closest("#audit-give-up")) {
+    e.preventDefault();
+    await fetch("/api/audit", { method: "DELETE" }).catch(() => {});
+    await refreshAudit();
+    return;
+  }
   const btn = e.target.closest("#audit-btn");
   if (!btn || btn.disabled) return;
   btn.disabled = true;

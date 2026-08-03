@@ -55,6 +55,7 @@ export class AuditRunner {
    * lost, and treating it as live would block every later one.
    */
   inFlight(): AuditStatus[] {
+    const cutoff = Date.now() - config.AUDIT_TIMEOUT_MS;
     const started = this.store.listEvents(20, 'audit.dispatched');
     const finished = new Set(
       this.store
@@ -68,6 +69,9 @@ export class AuditRunner {
         const id = (e.detail as AuditDetail)?.sessionId;
         return id && !finished.has(id);
       })
+      // An audit older than the bound is not in flight, it is lost — cancelled
+      // from the Devin dashboard, or stuck. Both look like `blocked` from here.
+      .filter((e) => new Date(e.createdAt).getTime() >= cutoff)
       .map((e) => ({
         sessionId: (e.detail as AuditDetail).sessionId!,
         url: (e.detail as AuditDetail).url ?? null,
@@ -142,6 +146,34 @@ export class AuditRunner {
    * there; if the session claims three and GitHub has one, the event log shows
    * the claim and the remediations show the truth.
    */
+  /**
+   * Write off the audit in flight, on an operator's say-so.
+   *
+   * The timeout is the safety net; this is the hand on the switch. Cancelling a
+   * session on Devin's side does not tell Autopilot anything — the session goes
+   * on reporting `running/waiting_for_user`, indistinguishable from one that
+   * stopped to ask a question — so without this, the person who just cancelled
+   * it has to wait out the bound before they can start another.
+   */
+  async abandon(reason: string): Promise<{ abandoned: boolean; reason: string }> {
+    const [open] = this.inFlight();
+    if (!open) return { abandoned: false, reason: 'no audit is running' };
+
+    try {
+      await this.devin.terminateSession(open.sessionId);
+    } catch {
+      /* best effort: it may already be gone, which is the usual case here */
+    }
+
+    this.store.appendEvent({
+      type: 'audit.finished',
+      detail: { sessionId: open.sessionId, url: open.url, state: 'abandoned', filed: 0, reason },
+    });
+    metrics.audits.inc({ result: 'abandoned' });
+    logger.info({ session: open.sessionId, reason }, 'audit abandoned');
+    return { abandoned: true, reason: `abandoned ${open.sessionId}` };
+  }
+
   async reconcile(): Promise<number> {
     let settled = 0;
 

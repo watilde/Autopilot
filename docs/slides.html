@@ -17,7 +17,7 @@
          N        presenter notes
          P        print / save as PDF (one slide per page)
 
-  Fourteen slides, paced for five minutes. Presenter notes live in
+  Fifteen slides, paced for five minutes. Presenter notes live in
   <aside class="notes"> under each slide and are hidden until N.
 -->
 
@@ -270,6 +270,16 @@ table.shipped td:last-child { width: 11%; }
   border-radius: 3px;
   padding: 3px 9px;
 }
+
+/* --- the live demo card: what the room is about to watch happen ----------- */
+.steps { display: grid; grid-template-columns: auto auto 1fr; gap: 11px 22px; align-items: baseline; }
+.steps .n {
+  font-family: var(--mono); font-size: 16px; color: #fff; background: var(--accent);
+  border-radius: 50%; width: 27px; height: 27px; display: grid; place-items: center;
+  line-height: 1;
+}
+.steps .s { font-size: 22px; font-weight: 650; white-space: nowrap; }
+.steps .d { font-size: 18px; color: var(--muted); line-height: 1.35; }
 
 /* --- the end-to-end timeline: time, event, and why it is worth a row ------- */
 .tl { display: grid; grid-template-columns: auto auto 1fr; gap: 7px 20px; align-items: baseline; }
@@ -600,7 +610,43 @@ body.notes-on #notes-panel { display: block; }
     </section>
 
     <!-- 4 ------------------------------------------------------------------ -->
-    <section class="slide" data-header="The loop, end to end">
+    <section class="slide" data-header="Live">
+      <h2 class="wide">One button, and then we watch</h2>
+      <div class="steps">
+        <span class="n">1</span><span class="s">Find something to fix</span>
+        <span class="d">a session goes and reads the repository — nobody has told it what is wrong</span>
+
+        <span class="n">2</span><span class="s">An issue appears</span>
+        <span class="d">carrying a contract, or intake refuses it and says so once</span>
+
+        <span class="n">3</span><span class="s">A pull request</span>
+        <span class="d">from <code>autopilot/&lt;contract&gt;-issue-&lt;n&gt;</code>, opened by Devin</span>
+
+        <span class="n">4</span><span class="s">CI re-runs the contract</span>
+        <span class="d">the issue&rsquo;s own <code>verify</code> commands, by something with no stake</span>
+
+        <span class="n">5</span><span class="s">A second session reviews it</span>
+        <span class="d">the diff and the contract, nothing else — it never saw the change being made</span>
+
+        <span class="n">6</span><span class="s">Merged</span>
+        <span class="d">Autopilot asks. GitHub is what says it happened</span>
+      </div>
+      <div class="spacer"></div>
+      <p class="small">
+        Nothing here is stubbed. Every step is a webhook this server verified, an
+        API call it made, or a state it read back — and every one of them is on
+        the dashboard while it happens.
+      </p>
+      <aside class="notes">
+        Put this up, then go to the browser. If the run stalls, do not wait on
+        camera: move to the next slide, which is one that already finished, and
+        come back to this at the end. Say why you moved — a demo that admits it
+        is waiting is better than a silence.
+      </aside>
+    </section>
+
+    <!-- 5 ------------------------------------------------------------------ -->
+    <section class="slide" data-header="One we ran this morning">
       <h2 class="wide">Nobody had noticed this bug at 08:56</h2>
       <div class="tl">
         <span class="t">08:56</span><span class="e">audit dispatched</span>
@@ -646,7 +692,7 @@ body.notes-on #notes-panel { display: block; }
       </aside>
     </section>
 
-    <!-- 5 ------------------------------------------------------------------ -->
+    <!-- 6 ------------------------------------------------------------------ -->
     <section class="slide" data-header="What Devin wrote">
       <h2 class="wide">Anatomy of a pull request — DEP-001</h2>
       <p class="pr-meta">
@@ -709,7 +755,7 @@ $ python -c "import sqlalchemy_redshift"
       </aside>
     </section>
 
-    <!-- 6 ------------------------------------------------------------------ -->
+    <!-- 7 ------------------------------------------------------------------ -->
     <section class="slide diagram-slide" data-header="Architecture">
       <h2 class="wide">Architecture</h2>
 <pre class="diagram">  TRIGGERS                  ORCHESTRATOR                 EXTERNAL
@@ -745,7 +791,7 @@ $ python -c "import sqlalchemy_redshift"
       </aside>
     </section>
 
-    <!-- 7 ------------------------------------------------------------------ -->
+    <!-- 8 ------------------------------------------------------------------ -->
     <section class="slide" data-header="Verification">
       <h2 class="wide">One definition of done, checked by two parties</h2>
       <p class="wide">Every issue carries a machine-readable <strong>contract</strong>:</p>
@@ -767,7 +813,7 @@ verify:
       </aside>
     </section>
 
-    <!-- 8 ------------------------------------------------------------------ -->
+    <!-- 9 ------------------------------------------------------------------ -->
     <section class="slide" data-header="The principle">
       <h2 class="wide">The principle</h2>
       <div class="big center">
@@ -800,7 +846,7 @@ verify:
       </aside>
     </section>
 
-    <!-- 9 ------------------------------------------------------------------ -->
+    <!-- 10 ----------------------------------------------------------------- -->
     <section class="slide" data-header="Measurement">
       <h2 class="wide">If I were an engineering leader, how would I know this is working?</h2>
       <table class="metrics">
@@ -852,7 +898,7 @@ verify:
       </aside>
     </section>
 
-    <!-- 10 ----------------------------------------------------------------- -->
+    <!-- 11 ----------------------------------------------------------------- -->
     <section class="slide" data-header="Why Devin · 1 of 2">
       <h2 class="wide">Why Devin — 1. It argues back, and it is right</h2>
       <p class="wide">
@@ -880,7 +926,7 @@ verify:
       </aside>
     </section>
 
-    <!-- 11 ----------------------------------------------------------------- -->
+    <!-- 12 ----------------------------------------------------------------- -->
     <section class="slide tight" data-header="Why Devin · 2 of 2">
       <h2 class="wide">Why Devin — 2. It refuses, and explains</h2>
       <p class="wide">
@@ -914,7 +960,7 @@ verify:
       </aside>
     </section>
 
-    <!-- 12 ----------------------------------------------------------------- -->
+    <!-- 13 ----------------------------------------------------------------- -->
     <section class="slide" data-header="Credibility">
       <h2 class="wide">What the system refuses to claim</h2>
       <div class="big center">Autopilot asks for a merge. It never records one.</div>
@@ -933,7 +979,7 @@ verify:
       </aside>
     </section>
 
-    <!-- 13 ----------------------------------------------------------------- -->
+    <!-- 14 ----------------------------------------------------------------- -->
     <section class="slide" data-header="Next">
       <h2 class="wide">Next, in a real engagement</h2>
       <div class="next-item">
@@ -963,7 +1009,7 @@ verify:
       </div>
     </section>
 
-    <!-- 14 ----------------------------------------------------------------- -->
+    <!-- 15 ----------------------------------------------------------------- -->
     <section class="slide" data-header="Run it yourself">
       <h2 class="wide">Run it yourself</h2>
 <pre>git clone https://github.com/watilde/Autopilot.git &amp;&amp; cd Autopilot

@@ -162,6 +162,17 @@ const schema = z.preprocess(
      * says a merge was requested, and nothing says why it never happened.
      */
     AUTO_MERGE_GRACE_MS: int(600_000),
+    /**
+     * How long an audit may stay in flight before it is written off.
+     *
+     * A cancelled session and a session that stopped to ask a question report
+     * the same thing — `running/waiting_for_user` — so there is no way to tell
+     * them apart from the API. Without a bound, cancelling an audit from the
+     * Devin dashboard leaves it in flight forever and the "find something to
+     * fix" button never works again. Time is the only signal available, so time
+     * is what decides: past this, it is not in flight, it is lost.
+     */
+    AUDIT_TIMEOUT_MS: int(1_800_000),
     MAX_CONCURRENT_SESSIONS: int(3),
     RECONCILE_INTERVAL_MS: int(15_000),
     SESSION_TIMEOUT_MS: int(3_600_000),
