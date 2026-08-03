@@ -106,6 +106,22 @@ const schema = z.preprocess(
      */
     MAX_REVIEW_REWORKS: int(2),
     /**
+     * Dispatch a second Devin session to review the pull request once CI is
+     * green, instead of waiting for a person.
+     *
+     * Off by default, and the honesty of the whole system depends on how this
+     * is described. A reviewing agent is a **second opinion, not independent
+     * evidence**: it comes from the same provider as the session that wrote the
+     * code, so it cannot carry the argument that CI carries. What it does have
+     * is no stake in the first session's work — it never saw the change being
+     * made, only the diff and the contract — which is enough to catch the class
+     * of thing CI cannot express: scope creep, a duplicated helper, a fix that
+     * satisfies the commands while missing the point.
+     *
+     * When this is on, a merge waits for an approval as well as a green build.
+     */
+    REVIEW_AGENT: bool(false),
+    /**
      * Branch that pull requests are opened against. Unset means the
      * repository's default branch, which is the right answer everywhere except
      * a demonstration.

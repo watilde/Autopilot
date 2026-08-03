@@ -130,3 +130,15 @@ export const reconcilerRuns = new Counter({
   labelNames: ['result'] as const,
   registers: [registry],
 });
+
+/**
+ * Audit sessions — the step that finds the defect in the first place. Counted
+ * because an audit that files nothing is a legitimate result, and telling that
+ * apart from an audit that never ran needs both numbers.
+ */
+export const audits = new Counter({
+  name: 'autopilot_audits_total',
+  help: 'Repository audit sessions, by disposition',
+  labelNames: ['result'] as const,
+  registers: [registry],
+});

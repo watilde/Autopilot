@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS remediations (
   ci_status          TEXT,
   reworks            INTEGER NOT NULL DEFAULT 0,
   review_reworks     INTEGER NOT NULL DEFAULT 0,
+  review_session_id  TEXT,
   merge_requested_at TEXT,
   merge_escalated_at TEXT,
   structured_output  TEXT,
@@ -98,6 +99,7 @@ const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
   ['remediations', 'merge_requested_at', 'TEXT'],
   ['remediations', 'merge_escalated_at', 'TEXT'],
   ['remediations', 'review_reworks', 'INTEGER NOT NULL DEFAULT 0'],
+  ['remediations', 'review_session_id', 'TEXT'],
 ];
 
 type Row = Record<string, unknown>;
@@ -125,6 +127,7 @@ function toRemediation(r: Row): Remediation {
     ciRunId: (r.ci_run_id as number) ?? null,
     reworks: (r.reworks as number) ?? 0,
     reviewReworks: (r.review_reworks as number) ?? 0,
+    reviewSessionId: (r.review_session_id as string) ?? null,
     mergeRequestedAt: (r.merge_requested_at as string) ?? null,
     mergeEscalatedAt: (r.merge_escalated_at as string) ?? null,
     structuredOutput: r.structured_output ? safeParse(r.structured_output as string) : null,
@@ -514,6 +517,21 @@ export class Store {
       .prepare('UPDATE remediations SET reworks = reworks + 1, updated_at = ? WHERE id = ?')
       .run(nowIso(), id);
     return this.get(id)?.reworks ?? 0;
+  }
+
+  /**
+   * Record the session reviewing this pull request, or clear it.
+   *
+   * Cleared when a change request comes back so the revision gets a fresh
+   * reviewer: the session that wrote the review already believes its own
+   * instruction was right, which is the wrong thing to have grading the
+   * response to it.
+   */
+  setReviewSession(id: number, sessionId: string | null): Remediation {
+    this.db
+      .prepare('UPDATE remediations SET review_session_id = ?, updated_at = ? WHERE id = ?')
+      .run(sessionId, nowIso(), id);
+    return this.get(id)!;
   }
 
   /**

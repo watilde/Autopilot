@@ -152,6 +152,19 @@ branch. Capped by `MAX_CI_REWORKS`: an agent that cannot fix its own build twice
 is stuck on something the contract did not anticipate, so the issue gets labelled
 `autopilot:needs-human` rather than looping on ACUs.
 
+**It can find the work as well as do it.** Every other trigger here starts at
+"an issue exists", which leaves the hardest and least rewarded step — noticing
+the defect at all — as the manual part, and that is exactly the work that loses
+to feature delivery. `POST /api/audit` (or `npm run audit`) starts a session that
+reads the repository, decides what is worth fixing, and files contract-carrying
+issues. They come back through the ordinary webhook path, so nothing downstream
+knows an agent wrote them: intake still refuses anything without a valid
+contract, and a bad audit produces refusals rather than sessions. One at a time,
+because two audits reading the same repository would file the same defects twice.
+`npm run devin:setup` registers the same prompt as a schedule on Devin's side for
+a cadence; this is the on-demand half, tracked here, so an audit is something
+Autopilot did rather than something that happened to it.
+
 **A change request goes back to the agent too.** CI answers *does it build*; a
 reviewer answers *is this the change we wanted*, which is a question the contract
 deliberately leaves open. A submitted `changes_requested` review on an
@@ -166,6 +179,23 @@ since a reviewer who has not read the failing run is not evidence that it passes
 Who the reviewer is never appears in the routing. A person and a second agent
 submit the same event, so the choice stays a policy question rather than a code
 path.
+
+**And the reviewer can be an agent — described accurately.** With `REVIEW_AGENT`
+on, a green build dispatches a *second* Devin session that never saw the change
+being made, gives it the diff and the contract, and asks it to submit a review on
+the pull request with `gh pr review`. That session's verdict arrives through the
+same webhook a person's would; there is no privileged channel for the agent's
+opinion, and if it says it reviewed while GitHub has no review, there is no
+review.
+
+This is a **second opinion, not independent evidence**, and the difference is the
+whole argument of this project. It comes from the same provider as the session
+that wrote the code, so it cannot carry what CI carries — which is why it runs
+*after* CI and never instead of it. What it does have is no stake in the first
+session's work, and that is enough for the class of problem the verify commands
+cannot express: a diff that wandered outside the files the contract named, a
+helper reimplemented, a fix that satisfies every command while leaving the defect
+in place. With it on, a merge waits for an approval as well as a green build.
 
 **A green pull request can merge itself, and the gate is narrow.** Off by
 default (`AUTO_MERGE`), because every other action here is reversible by a
@@ -618,6 +648,7 @@ Full list in [`.env.example`](.env.example).
 |---|---|---|
 | `POST` | `/webhooks/github` | HMAC-verified ingress |
 | `POST` | `/api/trigger` | manual trigger — `{"issueNumber": 1}` |
+| `POST` | `/api/audit` \| `GET` `/api/audit` | start a repository audit that files issues, or see the one running |
 | `POST` | `/api/scan` | force a scheduled sweep |
 | `POST` | `/api/tick` | force a reconcile pass |
 | `POST` | `/api/remediations/:id/reply` | answer a blocked session — `{"message": "…"}` |
@@ -645,7 +676,7 @@ curl -X POST localhost:8080/api/remediations/1/reply \
 
 Two layers, because they fail differently.
 
-**This orchestrator** — `npm test`, 170 tests, no network:
+**This orchestrator** — `npm test`, 181 tests, no network:
 
 ```bash
 npm test
@@ -729,6 +760,7 @@ scripts/
   issues.ts          the five contracts
   seed-issues.ts     create labels + issues
   devin-setup.ts     provision the playbook and the scheduled audit
+  audit.ts           start an audit now and wait for it
   simulate.ts        end-to-end demo driver
   scenario.ts        one issue through every path, a step at a time
   report.ts          terminal report

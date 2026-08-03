@@ -215,11 +215,12 @@ screen.
 > label, which is a proxy for risk rather than a measure of it. Diff size, blast
 > radius, whether the change stayed inside the modules the contract named.
 >
-> **A reviewer who is not us.** `pull_request_review` now goes back into the
-> same session, so a reviewer's 'why not use X here?' is answered in-session
-> instead of in a meeting. The open question is who submits it — an agent
-> reviewing an agent is a second opinion, not independent evidence, and only CI
-> is the latter.
+> **A reviewer who is not us.** The loop now closes with nobody in it — an
+> audit session files the issue, CI checks the fix, a second session reviews the
+> pull request. But an agent reviewing an agent is a *second opinion*, not
+> independent evidence: it comes from the same provider as the one that wrote
+> the code. Only CI is the latter, and closing that gap is the next real
+> problem, not another agent.
 >
 > **Contracts from scanners.** Every issue here was hand-written and verified.
 > The intake does not care where an issue came from — Dependabot, CodeQL,

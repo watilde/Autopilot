@@ -92,6 +92,12 @@ export interface Remediation {
   /** How many times a reviewer's change request sent this back. Counted apart. */
   reviewReworks: number;
   /**
+   * The session currently reviewing the pull request, when Autopilot dispatched
+   * one. Cleared when a change request comes back, so the revision gets a fresh
+   * review rather than the same session grading its own instruction.
+   */
+  reviewSessionId: string | null;
+  /**
    * When Devin was asked to merge the pull request. A record that we asked,
    * not a claim that it merged — the merge itself is observed from GitHub.
    */

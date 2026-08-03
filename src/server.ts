@@ -5,6 +5,7 @@ import { createDevinClient } from './devin/index.js';
 import { createGitHubClient } from './github/client.js';
 import { Orchestrator } from './core/orchestrator.js';
 import { Scanner } from './core/scanner.js';
+import { AuditRunner } from './core/audit.js';
 import { logger } from './logger.js';
 import { registerApiRoutes } from './routes/api.js';
 import { registerDashboardRoutes } from './routes/dashboard.js';
@@ -22,6 +23,7 @@ export function buildServer(deps?: {
   // Sweep at four times the reconcile interval: frequent enough to catch a
   // dropped webhook quickly, rare enough not to burn GitHub rate limit.
   const scanner = deps?.scanner ?? new Scanner(github, orchestrator, config.RECONCILE_INTERVAL_MS * 4);
+  const audit = new AuditRunner(store, devin, github);
 
   const app = Fastify({ logger: false, bodyLimit: 5 * 1024 * 1024 });
 
@@ -49,22 +51,29 @@ export function buildServer(deps?: {
 
   registerDashboardRoutes(app);
   registerWebhookRoutes(app, store, orchestrator);
-  registerApiRoutes(app, store, orchestrator, scanner, github, devin);
+  registerApiRoutes(app, store, orchestrator, scanner, github, devin, audit);
 
-  return { app, store, orchestrator, scanner, devin, github };
+  return { app, store, orchestrator, scanner, devin, github, audit };
 }
 
 async function main(): Promise<void> {
   assertServerConfig();
-  const { app, store, orchestrator, scanner } = buildServer();
+  const { app, store, orchestrator, scanner, audit } = buildServer();
 
   orchestrator.start();
   scanner.start();
+  // Audits run rarely and finish slowly; polling them on the reconcile beat is
+  // more than enough, and it keeps a second scheduler out of the process.
+  const auditTimer = setInterval(() => {
+    void audit.reconcile();
+  }, config.RECONCILE_INTERVAL_MS * 4);
+  auditTimer.unref();
 
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'shutting down');
     orchestrator.stop();
     scanner.stop();
+    clearInterval(auditTimer);
     await app.close();
     store.close();
     process.exit(0);

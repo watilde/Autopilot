@@ -66,14 +66,24 @@ class RecordingGitHub extends GitHubClient {
   override async comment(): Promise<void> {}
 }
 
-function harness(mock?: DevinMockClient, autoMerge?: AutoMergePolicy, gh?: GitHubClient) {
+function harness(
+  mock?: DevinMockClient,
+  autoMerge?: AutoMergePolicy,
+  gh?: GitHubClient,
+  reviewAgent?: boolean,
+) {
   const store = new Store(':memory:');
   const devin = mock ?? new DevinMockClient({ pollsUntilTerminal: 1, forceOutcome: 'fixed' });
   // No token → GitHub is inert, which is exactly the demo/offline path.
   const github = gh ?? new GitHubClient(undefined, 'watilde', 'superset');
   // Omitting the policy leaves the orchestrator on its shipped default, which
   // is how the "off unless asked for" tests get their subject.
-  return { store, devin, github, orchestrator: new Orchestrator(store, devin, github, autoMerge) };
+  return {
+    store,
+    devin,
+    github,
+    orchestrator: new Orchestrator(store, devin, github, autoMerge, reviewAgent),
+  };
 }
 
 describe('intake', () => {
@@ -1193,5 +1203,138 @@ describe('review loop', () => {
 
     expect(result.handled).toBe(false);
     expect(h.devin.messages).toHaveLength(0);
+  });
+});
+
+/**
+ * The reviewing agent — the piece that lets the chain run with nobody in it.
+ *
+ * It is also the piece most easily oversold, so the tests are about what it is
+ * NOT allowed to do: run before CI, run instead of CI, review its own
+ * revision, or put its verdict anywhere except the pull request.
+ */
+describe('reviewing agent', () => {
+  async function green(reviewAgent: boolean) {
+    const h = harness(
+      new DevinMockClient({ pollsUntilTerminal: 1, forceOutcome: 'fixed' }),
+      undefined,
+      undefined,
+      reviewAgent,
+    );
+    await h.orchestrator.intake(issue(), 'test');
+    await h.orchestrator.dispatch();
+    await h.orchestrator.reconcile();
+    await h.orchestrator.reconcile();
+    const r = h.store.listAll()[0]!;
+    return { ...h, remediation: r, branch: `autopilot/sec-001-issue-${r.issueNumber}` };
+  }
+
+  const ciPassed = (h: Awaited<ReturnType<typeof green>>) =>
+    h.orchestrator.handleCiResult({
+      branch: h.branch,
+      conclusion: 'success',
+      runId: 51,
+      runUrl: null,
+    });
+
+  it('dispatches a second session once CI is green', async () => {
+    const h = await green(true);
+    const sessionsBefore = h.devin.messages.length;
+
+    await ciPassed(h);
+
+    const r = h.store.get(h.remediation.id)!;
+    expect(r.reviewSessionId).toBeTruthy();
+    // A different session from the one that wrote the code. That separation is
+    // the only thing that makes it a review rather than a self-assessment.
+    expect(r.reviewSessionId).not.toBe(r.devinSessionId);
+    // And nothing was said to the authoring session: the verdict belongs on
+    // the pull request, not in a private channel back to the author.
+    expect(h.devin.messages).toHaveLength(sessionsBefore);
+
+    expect(h.store.listEvents(10, 'review.dispatched')).toHaveLength(1);
+  });
+
+  it('does not dispatch a reviewer when the agent is off', async () => {
+    const h = await green(false);
+
+    await ciPassed(h);
+
+    expect(h.store.get(h.remediation.id)!.reviewSessionId).toBeNull();
+    expect(h.store.listEvents(10, 'review.dispatched')).toHaveLength(0);
+  });
+
+  /**
+   * Review runs after the independent check, never instead of it. A red build
+   * that a reviewer approved is still a red build.
+   */
+  it('does not dispatch a reviewer while CI is red', async () => {
+    const h = await green(true);
+
+    await h.orchestrator.handleCiResult({
+      branch: h.branch,
+      conclusion: 'failure',
+      runId: 52,
+      runUrl: null,
+    });
+
+    expect(h.store.get(h.remediation.id)!.reviewSessionId).toBeNull();
+  });
+
+  it('does not start a second review while one is in flight', async () => {
+    const h = await green(true);
+    await ciPassed(h);
+    const first = h.store.get(h.remediation.id)!.reviewSessionId;
+
+    await ciPassed(h);
+
+    expect(h.store.get(h.remediation.id)!.reviewSessionId).toBe(first);
+    expect(h.store.listEvents(10, 'review.dispatched')).toHaveLength(1);
+  });
+
+  /**
+   * The session that wrote a change request already believes its own
+   * instruction was right. A fresh one grades the response to it.
+   */
+  it('clears the reviewer when changes are requested, so the revision gets a new one', async () => {
+    const h = await green(true);
+    await ciPassed(h);
+    const first = h.store.get(h.remediation.id)!.reviewSessionId;
+    expect(first).toBeTruthy();
+
+    await h.orchestrator.handleReview({
+      branch: h.branch,
+      state: 'changes_requested',
+      body: 'duplicates make_id()',
+      reviewer: 'autopilot-reviewer',
+      reviewUrl: null,
+    });
+
+    expect(h.store.get(h.remediation.id)!.reviewSessionId).toBeNull();
+  });
+
+  /**
+   * At the cap the next change request escalates anyway, so a review whose
+   * only outcomes are "approve" or "escalate" is spending to learn nothing.
+   */
+  it('stops reviewing once the review rework cap is reached', async () => {
+    const h = await green(true);
+    await ciPassed(h);
+
+    for (let i = 0; i < 2; i++) {
+      await h.orchestrator.handleReview({
+        branch: h.branch,
+        state: 'changes_requested',
+        body: 'again',
+        reviewer: 'autopilot-reviewer',
+        reviewUrl: null,
+      });
+      await h.orchestrator.reconcile();
+    }
+
+    await ciPassed(h);
+
+    expect(h.store.get(h.remediation.id)!.reviewSessionId).toBeNull();
+    expect(h.store.listEvents(20, 'review.dispatched')).toHaveLength(1);
   });
 });

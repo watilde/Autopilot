@@ -3,6 +3,7 @@ import { config } from '../config.js';
 import type { Store } from '../db/index.js';
 import type { Orchestrator } from '../core/orchestrator.js';
 import type { Scanner } from '../core/scanner.js';
+import type { AuditRunner } from '../core/audit.js';
 import type { DevinClient } from '../devin/types.js';
 import { supportsPlatformApi } from '../devin/types.js';
 import type { GitHubClient } from '../github/client.js';
@@ -21,6 +22,7 @@ export function registerApiRoutes(
   scanner: Scanner,
   github: GitHubClient,
   devin: DevinClient,
+  audit?: AuditRunner,
 ): void {
   app.get('/healthz', async () => ({
     status: 'ok',
@@ -129,6 +131,31 @@ export function registerApiRoutes(
     return { id: r.id, issueNumber: r.issueNumber, state: r.state };
   });
 
+  /**
+   * Find work, rather than waiting to be given it.
+   *
+   * Every other trigger in this system starts at "an issue exists". This one
+   * starts before that: a Devin session reads the repository, decides what is
+   * worth fixing, and files contract-carrying issues, which arrive back through
+   * the ordinary webhook path. Intake still refuses anything without a valid
+   * contract, so an audit that files rubbish produces refusals, not sessions.
+   *
+   * Not gated behind a flag, because it costs one session and files at most
+   * three issues, and every one of them still has to survive intake. It is
+   * gated to one at a time, because two audits reading the same repository
+   * would file the same defects twice.
+   */
+  app.post('/api/audit', async (_req, reply) => {
+    if (!audit) return reply.code(501).send({ error: 'no audit runner configured' });
+    const result = await audit.dispatch('manual-api');
+    return reply.code(result.dispatched ? 202 : 409).send(result);
+  });
+
+  app.get('/api/audit', async () => {
+    if (!audit) return { inFlight: [] };
+    return { inFlight: audit.inFlight() };
+  });
+
   app.post('/api/scan', async () => {
     const result = await scanner.scan();
     void orchestrator.tick();
@@ -138,6 +165,9 @@ export function registerApiRoutes(
   /** Force a reconcile pass; handy when watching a live demo. */
   app.post('/api/tick', async () => {
     await orchestrator.tick();
-    return { ok: true, active: store.countActive() };
+    // Audits are polled on the same beat. They are not remediations and have no
+    // row, but a finished audit that nobody closed out blocks the next one.
+    const auditsSettled = audit ? await audit.reconcile() : 0;
+    return { ok: true, active: store.countActive(), auditsSettled };
   });
 }

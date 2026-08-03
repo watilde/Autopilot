@@ -19,7 +19,8 @@
     "simulate": "tsx --env-file-if-exists=.env scripts/simulate.ts",
     "report": "tsx --env-file-if-exists=.env scripts/report.ts",
     "labels:sync": "tsx --env-file-if-exists=.env scripts/sync-labels.ts",
-    "scenario": "tsx --env-file-if-exists=.env scripts/scenario.ts"
+    "scenario": "tsx --env-file-if-exists=.env scripts/scenario.ts",
+    "audit": "tsx --env-file-if-exists=.env scripts/audit.ts"
   },
   "dependencies": {
     "@octokit/rest": "^21.1.1",

@@ -251,3 +251,156 @@ export function sessionTags(contract: RemediationContract, issueNumber: number):
     `severity:${contract.severity}`,
   ];
 }
+
+/**
+ * Prompt for the reviewing session.
+ *
+ * A different session from the one that wrote the code, deliberately. It never
+ * saw the change being made, and it is given the contract and the diff — which
+ * is the position a human reviewer is in, and the only position from which
+ * "this satisfies the commands but misses the point" is a thing you can say.
+ *
+ * It reviews on GitHub rather than reporting back here, and that is the whole
+ * design: submitting a `pull_request_review` puts the verdict where the pull
+ * request is, visible to anyone reading it, and Autopilot picks it up through
+ * the same webhook a person's review arrives on. There is no privileged
+ * channel for the agent's opinion.
+ *
+ * The scope limits matter more here than anywhere else. A reviewer that starts
+ * editing is no longer a reviewer, and a reviewer that approves its own
+ * provider's work on vibes is worse than none — so it is told what CI already
+ * covers, and asked not to re-litigate it.
+ */
+export function reviewPrompt(input: {
+  owner: string;
+  repo: string;
+  issueNumber: number;
+  issueUrl: string;
+  prUrl: string;
+  contract: RemediationContract;
+}): string {
+  const { owner, repo, issueNumber, issueUrl, prUrl, contract } = input;
+  const acceptance = contract.acceptance.map((a, i) => `  ${i + 1}. ${a}`).join('\n');
+  const targets = contract.targets.map((t) => `  - ${t}`).join('\n');
+
+  return `Review a pull request opened by another agent against the contract it was given,
+and submit your review on GitHub.
+
+# What you are reviewing
+${prUrl}
+It closes issue #${issueNumber} in ${owner}/${repo}: ${issueUrl}
+
+You did not write this change and you have no context on it beyond what is in
+the pull request. That is intentional. Read the diff.
+
+# The contract it was held to
+Contract ${contract.id} — ${contract.category}, severity ${contract.severity}
+
+Files it was allowed to touch:
+${targets}
+
+What "fixed" was defined as:
+${acceptance}
+
+# What CI has already checked, and you should not re-check
+A verification job has already re-run every \`verify\` command from the issue on
+this pull request, and they passed. Do not re-run them, do not comment on
+whether the tests pass, and do not ask for more tests unless their absence is
+the defect. That question is answered.
+
+# What only a reviewer can check
+1. **Scope.** Does the diff stay inside the files the contract named? Changes to
+   anything else are a problem even if they are improvements.
+2. **The point.** Does the change actually address the defect described in the
+   issue, or does it satisfy the verification commands while leaving the defect
+   intact? This is the failure the commands cannot catch.
+3. **Duplication.** Does it re-implement something the repository already has?
+4. **Blast radius.** Does it change behaviour the issue did not ask to change —
+   a public signature, a default, an error type callers may depend on?
+5. **Legibility.** Would a maintainer reading this in six months understand why
+   it is written this way?
+
+# How to submit the review
+Use the GitHub CLI, on the pull request above.
+
+- If it is sound, approve it:
+  \`gh pr review ${prUrl} --approve --body "<what you checked, in two or three sentences>"\`
+- If it needs changes, request them:
+  \`gh pr review ${prUrl} --request-changes --body "<what is wrong and what would fix it>"\`
+
+Be specific in the body. The author is another agent and your body is the entire
+instruction it will act on — "this could be cleaner" is not actionable, "this
+duplicates make_id() in superset/utils/core.py; call that instead" is.
+
+Request changes only for something in the list above. A preference about style
+that the surrounding code does not already enforce is not a reason to send work
+back — every round trip costs money, and a reviewer that cannot be satisfied is
+a worse failure than a change that was merely fine.
+
+# Hard limits
+- Do NOT push commits, edit files, or open a pull request of your own. You are
+  reviewing.
+- Do NOT merge, close, or reopen anything.
+- Do NOT approve without reading the diff. If you cannot see the diff, say so in
+  a \`--comment\` review and stop; a review you could not perform must not look
+  like one you did.`;
+}
+
+/** What the reviewing session reports back, so the verdict is data as well as a GitHub review. */
+export const REVIEW_OUTPUT_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  required: ['verdict', 'summary', 'submitted'],
+  properties: {
+    verdict: {
+      type: 'string',
+      enum: ['approved', 'changes_requested', 'could_not_review'],
+      description: 'The review that was submitted on the pull request.',
+    },
+    summary: {
+      type: 'string',
+      description: 'What was checked and what was found, in two or three sentences.',
+    },
+    submitted: {
+      type: 'boolean',
+      description: 'True only if `gh pr review` actually succeeded. Never true on intent alone.',
+    },
+    concerns: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Specific, actionable problems. Empty when approving.',
+    },
+    out_of_scope_files: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Files the diff touched that the contract did not name.',
+    },
+  },
+};
+
+/** What the audit session reports: what it filed, and what it decided not to. */
+export const AUDIT_OUTPUT_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  required: ['issues_filed', 'summary'],
+  properties: {
+    issues_filed: {
+      type: 'array',
+      description: 'Issues actually opened. Empty is a legitimate result.',
+      items: {
+        type: 'object',
+        properties: {
+          number: { type: ['integer', 'null'] },
+          url: { type: 'string' },
+          contract_id: { type: 'string' },
+          category: { type: 'string' },
+          title: { type: 'string' },
+        },
+      },
+    },
+    considered_and_rejected: {
+      type: 'array',
+      items: { type: 'string' },
+      description: 'Defects found but not filed, and why — needed a product decision, already reported, not mechanically verifiable.',
+    },
+    summary: { type: 'string' },
+  },
+};

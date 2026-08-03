@@ -13,6 +13,8 @@ import {
 import { branchFor, parseContract } from './contract.js';
 import {
   REMEDIATION_OUTPUT_SCHEMA,
+  REVIEW_OUTPUT_SCHEMA,
+  reviewPrompt,
   buildPrompt,
   sessionTags,
   sessionTitle,
@@ -89,6 +91,12 @@ export class Orchestrator {
       categories: config.AUTO_MERGE_CATEGORIES,
       graceMs: config.AUTO_MERGE_GRACE_MS,
     },
+    /**
+     * Injected rather than read at the call site so a test can turn the
+     * reviewing agent on without turning it on for the process — the same
+     * reason `autoMerge` is a parameter.
+     */
+    private readonly reviewAgent: boolean = config.REVIEW_AGENT,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -464,12 +472,22 @@ export class Orchestrator {
     if (passed) {
       log.info('ci passed on remediation branch');
       const upgraded = await this.settleOnIndependentVerification(this.store.get(r.id)!);
-      const merge = await this.requestMergeIfEligible(this.store.get(r.id)!);
+
+      // With a reviewing agent configured, a green build is the start of
+      // review rather than the end of the work: the merge waits for an
+      // approval as well. Without one, the build is the only gate there is and
+      // the merge is requested here, as before.
+      const review = await this.dispatchReviewIfEligible(this.store.get(r.id)!);
+      const merge = review.dispatched
+        ? { requested: false, reason: 'waiting on review' }
+        : await this.requestMergeIfEligible(this.store.get(r.id)!);
+
       return {
         handled: true,
         reason: [
           'ci passed',
           upgraded ? 'state corrected to succeeded' : null,
+          review.dispatched ? review.reason : null,
           merge.requested ? merge.reason : null,
         ]
           .filter(Boolean)
@@ -554,6 +572,133 @@ export class Orchestrator {
     );
 
     return { handled: true, reason: 'failure returned to devin', remediationId: updated.id };
+  }
+
+  /**
+   * Put a second session on the pull request, to review it.
+   *
+   * This is the piece that lets the chain run without a person in it, and it
+   * is also the piece most easily oversold. A reviewing agent is a **second
+   * opinion, not independent evidence**: it comes from the same provider as the
+   * session that wrote the code, and nothing about it carries the argument that
+   * CI carries. What it does have is no stake in the first session's work — it
+   * never saw the change being made, only the diff and the contract — which is
+   * enough for the class of problem the verify commands cannot express: a diff
+   * that wandered outside the files the contract named, a helper reimplemented,
+   * a fix that satisfies every command while leaving the defect in place.
+   *
+   * So it runs *after* CI, never instead of it, and its verdict arrives the
+   * same way a person's does: a `pull_request_review` on GitHub, picked up by
+   * the same webhook. There is no privileged channel for the agent's opinion,
+   * and nothing here writes the review into our own record — if the session
+   * says it reviewed and GitHub has no review, we have no review.
+   */
+  private async dispatchReviewIfEligible(
+    r: Remediation,
+  ): Promise<{ dispatched: boolean; reason: string }> {
+    if (!this.reviewAgent) return { dispatched: false, reason: 'review agent is disabled' };
+    if (!r.prUrl) return { dispatched: false, reason: 'no pull request to review' };
+    if (r.prState && r.prState !== 'open') {
+      return { dispatched: false, reason: `pull request is already ${r.prState}` };
+    }
+    if (r.ciStatus !== 'passed') return { dispatched: false, reason: 'ci has not passed' };
+    if (r.state !== 'succeeded') return { dispatched: false, reason: `state is ${r.state}` };
+    if (r.reviewSessionId) return { dispatched: false, reason: 'a review is already in flight' };
+    if (r.reviewReworks >= config.MAX_REVIEW_REWORKS) {
+      // At the cap the next change request escalates anyway. Paying for a
+      // review whose only possible outcomes are "approve" or "escalate" is
+      // spending to learn something the counter already knows.
+      return { dispatched: false, reason: 'review rework cap reached' };
+    }
+
+    // The contract is re-read rather than reconstructed: the reviewer is
+    // checking the diff against what was actually asked for, and a summary of
+    // the contract is not what was asked for.
+    const issue = this.github.enabled ? await this.github.getIssue(r.issueNumber) : null;
+    const parsed = parseContract(issue?.body ?? null);
+    if (this.github.enabled && !parsed.ok) {
+      // With GitHub reachable, an unreadable contract means the issue was
+      // edited out from under the pull request. A reviewer cannot check a diff
+      // against a contract that no longer exists, and inventing one would be
+      // worse than not reviewing.
+      return { dispatched: false, reason: `contract unreadable: ${parsed.reason}` };
+    }
+
+    // Same fallback as dispatch: in mock/demo mode there is no token, so the
+    // contract is synthesised from what intake already validated rather than
+    // silently skipping the step the demo exists to show.
+    const contract = parsed.ok
+      ? parsed.contract
+      : {
+          id: r.contractId ?? 'DEMO-000',
+          category: (r.category ?? 'other') as never,
+          severity: (r.severity ?? 'medium') as never,
+          targets: ['unknown'],
+          acceptance: ['as described in the issue'],
+          verify: ['true'],
+        };
+
+    try {
+      const session = await this.devin.createSession({
+        prompt: reviewPrompt({
+          owner: this.github.owner,
+          repo: this.github.repo,
+          issueNumber: r.issueNumber,
+          issueUrl: r.issueUrl,
+          prUrl: r.prUrl,
+          contract,
+        }),
+        title: `[Autopilot review] ${contract.id} — issue #${r.issueNumber}`,
+        tags: [
+          'autopilot',
+          'review',
+          `contract:${contract.id}`,
+          `issue:${r.issueNumber}`,
+          `category:${contract.category}`,
+        ],
+        maxAcuLimit: config.DEVIN_MAX_ACU,
+        structuredOutputSchema: REVIEW_OUTPUT_SCHEMA,
+      });
+
+      this.store.setReviewSession(r.id, session.sessionId);
+      this.store.appendEvent({
+        remediationId: r.id,
+        issueNumber: r.issueNumber,
+        type: 'review.dispatched',
+        detail: { sessionId: session.sessionId, url: session.url, prUrl: r.prUrl },
+      });
+      metrics.reviews.inc({ verdict: 'dispatched', category: r.category ?? 'unknown' });
+
+      logger.info(
+        { remediation: r.id, issue: r.issueNumber, session: session.sessionId, prUrl: r.prUrl },
+        'dispatched a reviewing session',
+      );
+      await this.github.comment(
+        r.issueNumber,
+        [
+          '### 👀 A second session is reviewing the pull request',
+          '',
+          `CI has passed on ${r.prUrl}, so a separate Devin session — one that did not write`,
+          'the change and has only the diff and the contract — has been asked to review it and',
+          `submit its verdict on the pull request: ${session.url}`,
+          '',
+          'This is a second opinion, not independent verification. It comes from the same',
+          'provider as the session that wrote the code. The independent check is CI, which has',
+          'already run. What a reviewer adds is the question CI cannot ask: whether this is the',
+          'change the issue actually wanted.',
+        ].join('\n'),
+      );
+
+      return { dispatched: true, reason: 'review session dispatched' };
+    } catch (err) {
+      // A transport failure is not a verdict. Leave the record alone so the
+      // next green build tries again rather than merging unreviewed.
+      logger.warn(
+        { remediation: r.id, issue: r.issueNumber, err: (err as Error).message },
+        'could not dispatch a reviewing session',
+      );
+      return { dispatched: false, reason: 'could not create the review session' };
+    }
   }
 
   /**
@@ -645,6 +790,9 @@ export class Orchestrator {
     }
 
     const attempt = this.store.incrementReviewReworks(r.id);
+    // The reviewer's job is done and its opinion is now the instruction. A
+    // fresh session reviews the response to it.
+    this.store.setReviewSession(r.id, null);
     this.store.appendEvent({
       remediationId: r.id,
       issueNumber: r.issueNumber,
