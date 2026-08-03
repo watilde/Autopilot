@@ -16,16 +16,24 @@ front of people is more persuasive than a person talking over it.
 
 ## Which slide is up
 
+Every slide is accounted for. The cue is printed before each thing you say, so
+you never have to work out where you are from the section heading.
+
 | Section | Slides | Words |
 |---|---|---|
-| 0:00 – 0:35 · What | 1 · 2 · 3 | ~85 |
-| 0:35 – 2:45 · How — **the live run** | 4, then the browser | ~190 |
-| 2:45 – 3:25 · How — the decision | 7 · 9 · 13 | ~95 |
-| 3:25 – 4:25 · Why Devin | 11 · 12 | ~150 |
-| 4:25 – 5:00 · When — next | 14 · 15 | ~75 |
+| 0:00 – 0:35 · What | **1 · 2 · 3** | ~85 |
+| 0:35 – 2:45 · How — **the live run** | **4** → the browser, with **8** and **10** while you wait | ~190 |
+| 2:45 – 3:25 · How — the decision | **7 · 9 · 13** | ~95 |
+| 3:25 – 4:25 · Why Devin | **11 · 12** | ~150 |
+| 4:25 – 5:00 · When — next | **14 · 15** | ~75 |
 
-Slide 5 is the run that already finished. It is the **fallback**, not part of the
-plan — see the runbook.
+Two slides are deliberately not in the run:
+
+- **Slide 5** — the run that finished this morning. The **fallback**: put it up
+  the moment the live one goes quiet, and say why you moved.
+- **Slide 6** — the anatomy of one pull request. **Skip it** unless someone asks
+  what Devin's output actually looks like, in which case it is the answer and it
+  is worth the twenty seconds.
 
 ---
 
@@ -99,25 +107,29 @@ before the close. A demo that admits it is waiting beats a silence.
 ---
 
 ## 0:00 – 0:35 · What
-<!-- Slides 1 → 2 → 3. Move on "So the obvious move…" and on "This is Autopilot." -->
+
+**▸ Slide 1 — Autopilot** (title)
 
 > "Every org has a backlog that is real, small, and never urgent enough. Known
 > vulnerabilities. A dependency pin nobody can justify. The same weak pattern in
 > three files. Not hard — each one costs a context switch, and that is the
-> expensive part.
->
-> So you point an agent at it, and you inherit a different problem: **the agent
-> says it fixed it. How do you know?**
->
-> This is Autopilot. Seven issues on a fork of Apache Superset, seven pull
+> expensive part."
+
+**▸ Slide 2 — The backlog nobody gets to**
+
+> "So you point an agent at it, and you inherit a different problem: **the agent
+> says it fixed it. How do you know?**"
+
+**▸ Slide 3 — What shipped**
+
+> "This is Autopilot. Seven issues on a fork of Apache Superset, seven pull
 > requests, all merged — and **two of those issues nobody wrote.**"
 
 ---
 
 ## 0:35 – 2:45 · How — the live run
-<!-- Slide 4, then the browser. Mostly watching. -->
 
-Slide 4 up. Read nothing off it.
+**▸ Slide 4 — One button, and then we watch.** Read nothing off it.
 
 > "I am going to press one button and we are going to watch the whole thing
 > happen. Nothing here is stubbed."
@@ -128,6 +140,7 @@ Slide 4 up. Read nothing off it.
 > going to read it and file what it finds."
 
 **When the issue appears**, open it and scroll to the fenced block.
+*(If you would rather show it on the deck than in the browser: **slide 8 — One definition of done, checked by two parties**.)*
 
 > "There it is. And the part that matters is at the bottom: a **contract** —
 > what to change, what not to touch, and the exact commands that constitute
@@ -135,7 +148,8 @@ Slide 4 up. Read nothing off it.
 > thirty-four issues here."
 
 **Dashboard.** Point at the row appearing, then wait for the pull request. This
-is the long one; use it.
+is the long one; use it. *(**Slide 10** is the same numbers, if the dashboard is
+slow to load.)*
 
 > "While that runs — the numbers on this page are outcome-shaped on purpose.
 > Merge rate, not pull request count. Issue-to-PR kept apart from PR-to-merged.
@@ -161,8 +175,11 @@ is the long one; use it.
 ---
 
 ## 2:45 – 3:25 · How — the decision
-<!-- Slide 7 for the contract, 9 for the numbers, 13 for what it will not claim.
-     Recording: `orchestrator.ts` at settleOnIndependentVerification instead. -->
+
+**▸ Slide 7 — Architecture.** Recording: open `orchestrator.ts` at
+`settleOnIndependentVerification` instead, and let the code be the slide.
+
+**▸ Slide 9 — The principle**
 
 > "One decision runs through the codebase: **independent evidence outranks what
 > the agent says about its own work** — and it has to cut both ways, or it is
@@ -170,33 +187,34 @@ is the long one; use it.
 >
 > Demoting a 'fixed' that does not build is easy. The other direction is the
 > hard one: a remediation recorded `failed`, on the agent's own report, that CI
-> later passed on the same pull request. That gets promoted.
->
-> And the same principle decides what this will *not* claim. It asks for merges.
+> later passed on the same pull request. That gets promoted."
+
+**▸ Slide 13 — What the system refuses to claim**
+
+> "And the same principle decides what this will *not* claim. It asks for merges.
 > It never records one."
 
 ---
 
 ## 3:25 – 4:25 · Why Devin
-<!-- Slides 11 and 12. Let the room read the quotes. -->
 
 Three artefacts. Everything else here could be built without an agent; these
-could not.
+could not. Let the room read the quotes — do not read them aloud.
 
-**Issue #5.**
+**▸ Slide 11 — It argues back, and it is right.** Recording: open issue #5.
 
 > "The contract said verify with `tsc --noEmit`. It got everything else green,
 > then stopped: that check fails in *any* clean checkout, and fixing it is
 > outside this contract. It was right. A codemod fails silently; a worse agent
 > disables the check."
 
-**Issue #3.**
+**▸ Slide 12 — It refuses, and explains.** Recording: open issue #3.
 
 > "We asked it to merge its own pull request. It said: *my tooling blocks
 > merging into master — that is my guardrail, not GitHub's, so I will not try
 > auto-merge as a workaround.* Then it named what would permit one."
 
-**PR #14.**
+**Still slide 12.** Recording: open PR #14.
 
 > "And the reviewing session opened with: *submitting as a comment, because
 > GitHub will not let this account approve a pull request it opened.* It hit a
@@ -209,7 +227,8 @@ could not.
 ---
 
 ## 4:25 – 5:00 · When
-<!-- Slide 14 for the three, 15 to close on. -->
+
+**▸ Slide 14 — Next, in a real engagement**
 
 > "Three things next.
 >
@@ -224,6 +243,9 @@ could not.
 > That is where the volume is.
 >
 > Repos and the write-up are in the description. Thanks."
+
+**▸ Slide 15 — Run it yourself.** Leave it up while you say the last line, so the
+clone command is on screen when the recording ends.
 
 ---
 
