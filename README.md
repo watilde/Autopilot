@@ -697,7 +697,14 @@ scripts/
   devin-setup.ts     provision the playbook and the scheduled audit
   simulate.ts        end-to-end demo driver
   report.ts          terminal report
+  sync-labels.ts     repair labels that drifted from the record
+docs/
+  slides.md          Marp deck for the walkthrough
+  loom-script.md     the same argument, timed for five minutes
 ```
+
+Render the deck with
+`npx @marp-team/marp-cli@latest docs/slides.md -o docs/slides.html` (or `--pdf`).
 
 The CI half lives in the target repository, not here:
 [`.github/workflows/autopilot-verify.yml`](https://github.com/watilde/superset/blob/master/.github/workflows/autopilot-verify.yml).
