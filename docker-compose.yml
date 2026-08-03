@@ -33,6 +33,14 @@ services:
       # --- policy ---
       AUTOPILOT_LABEL: ${AUTOPILOT_LABEL:-autopilot}
       MAX_CI_REWORKS: ${MAX_CI_REWORKS:-2}
+      MAX_REVIEW_REWORKS: ${MAX_REVIEW_REWORKS:-2}
+      # A second session reviews the pull request once CI is green. Off by
+      # default; a second opinion, not independent evidence — see .env.example.
+      REVIEW_AGENT: ${REVIEW_AGENT:-false}
+      # Empty means the repository's default branch. Set to an integration
+      # branch to let a merge actually happen: Devin's tooling refuses
+      # main/master unconditionally.
+      PR_BASE_BRANCH: ${PR_BASE_BRANCH:-}
       # Off by default here too: merging is the one irreversible step, and a
       # container that merges unattended has to have been told to.
       AUTO_MERGE: ${AUTO_MERGE:-false}

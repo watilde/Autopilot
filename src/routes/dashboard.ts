@@ -214,6 +214,22 @@ const PAGE = String.raw`<!doctype html>
     font-size: 12px; line-height: 1.5; color: var(--text-secondary);
   }
   .ev-note { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
+
+  /* --- the one control on the page ---------------------------------------- */
+  .btn {
+    font: inherit; font-size: 13px; font-weight: 600;
+    padding: 8px 16px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--series-1);
+    background: var(--series-1); color: #fff;
+  }
+  .btn:hover:not(:disabled) { filter: brightness(1.08); }
+  .btn:disabled {
+    cursor: default; background: transparent; color: var(--muted); border-color: var(--border);
+  }
+  .audit-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; }
+  .audit-state { font-size: 13px; color: var(--text-secondary); }
+  .audit-log { font-size: 12.5px; color: var(--muted); margin: 12px 0 0; line-height: 1.7; }
+  .audit-log .when { font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -227,6 +243,18 @@ const PAGE = String.raw`<!doctype html>
     Event-driven issue remediation. GitHub issues in, verified Devin pull requests out.
     <span id="stamp"></span>
   </p>
+
+  <h2>Finding work</h2>
+  <div class="card">
+    <p class="lede">
+      Everything below starts at <strong>an issue exists</strong>. This starts before that: a
+      session reads the repository, decides what is worth fixing, and files contract-carrying
+      issues. They come back through the same webhook path as anything else — intake still
+      refuses whatever has no valid contract, so an audit cannot skip a single gate.
+    </p>
+    <div class="audit-row" id="audit"></div>
+    <div class="audit-log" id="audit-log"></div>
+  </div>
 
   <h2>Outcomes</h2>
   <div class="kpis" id="kpis"></div>
@@ -556,8 +584,71 @@ async function refresh() {
     "· updated " + new Date(a.generatedAt).toLocaleTimeString();
 
   restoreOpenRows();
-  await Promise.all([refreshDevin(), refreshEscalations()]);
+  await Promise.all([refreshDevin(), refreshEscalations(), refreshAudit()]);
 }
+
+/**
+ * The audit control, and what the last few audits did.
+ *
+ * The button is disabled while one is running rather than hidden, because a
+ * control that disappears reads as a bug and a control that queues a second
+ * audit files every defect twice. A filed count of zero is printed as a result, not
+ * suppressed: an audit that finds nothing worth filing is a legitimate outcome,
+ * and it has to be distinguishable from one that never ran.
+ */
+async function refreshAudit() {
+  const row = document.getElementById("audit");
+  const log = document.getElementById("audit-log");
+
+  let inFlight = [];
+  let finished = [];
+  try {
+    const [a, f] = await Promise.all([
+      fetch("/api/audit").then(r => r.json()),
+      fetch("/api/events?type=audit.finished&limit=5").then(r => r.json()),
+    ]);
+    inFlight = a.inFlight || [];
+    finished = f.events || [];
+  } catch {
+    row.innerHTML = '<span class="audit-state">The audit endpoint is not available on this build.</span>';
+    return;
+  }
+
+  const running = inFlight[0];
+  row.innerHTML =
+    '<button class="btn" id="audit-btn"' + (running ? " disabled" : "") + '>' +
+      (running ? "Audit running…" : "Find something to fix") + '</button>' +
+    '<span class="audit-state">' +
+      (running
+        ? 'started ' + new Date(running.dispatchedAt).toLocaleTimeString() +
+          (running.url
+            ? ' · <a href="' + esc(running.url) + '" target="_blank" rel="noopener">session</a>'
+            : '')
+        : 'One at a time — two audits reading the same repository file the same defects twice.') +
+    '</span>';
+
+  log.innerHTML = finished.length
+    ? finished.map(e => {
+        const d = e.detail || {};
+        const n = d.filed ?? 0;
+        return '<div><span class="when">' + esc(new Date(e.createdAt).toLocaleString()) + '</span> · ' +
+          esc(d.state || "finished") + ' · ' +
+          (n ? n + ' issue' + (n === 1 ? '' : 's') + ' filed' : 'nothing worth filing') +
+          '</div>';
+      }).join("")
+    : '<div>No audit has run yet.</div>';
+}
+
+document.getElementById("audit").addEventListener("click", async e => {
+  const btn = e.target.closest("#audit-btn");
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = "Starting…";
+  try {
+    await fetch("/api/audit", { method: "POST" });
+  } catch {}
+  await refreshAudit();
+});
 
 /**
  * The evidence, quoted rather than summarised.

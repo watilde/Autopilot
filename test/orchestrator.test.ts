@@ -1338,3 +1338,69 @@ describe('reviewing agent', () => {
     expect(h.store.listEvents(20, 'review.dispatched')).toHaveLength(1);
   });
 });
+
+/**
+ * The scanner re-reads every labelled issue on a cadence, so an issue it cannot
+ * accept is re-examined about once a minute forever. Refusing it every time is
+ * correct. Saying so every time is how ten identical comments landed on one real
+ * issue inside twelve minutes.
+ */
+describe('refusing the same issue twice', () => {
+  const noContract = () => issue({ number: 303, body: 'please just fix it' });
+
+  it('comments once, however many times it is refused', async () => {
+    const gh = new RecordingGitHub({ 303: ['autopilot'] });
+    const h = harness(undefined, undefined, gh);
+
+    const first = await h.orchestrator.intake(noContract(), 'webhook');
+    await h.orchestrator.intake(noContract(), 'scheduled-scan');
+    await h.orchestrator.intake(noContract(), 'scheduled-scan');
+
+    expect(first.accepted).toBe(false);
+    // Refused every time — that part must not change.
+    expect(h.store.listAll()).toHaveLength(0);
+    // Said once.
+    expect(h.store.listEvents(20, 'intake.rejected')).toHaveLength(1);
+  });
+
+  /** The refusal has to be visible from the issue list, not only in comments. */
+  it('labels the issue so the state is visible without reading comments', async () => {
+    const gh = new RecordingGitHub({ 303: ['autopilot'] });
+    const h = harness(undefined, undefined, gh);
+
+    await h.orchestrator.intake(noContract(), 'webhook');
+
+    expect(gh.labelsOn(303)).toContain('autopilot:needs-contract');
+  });
+
+  it('takes the label off once the contract arrives', async () => {
+    const gh = new RecordingGitHub({ 303: ['autopilot'] });
+    const h = harness(undefined, undefined, gh);
+    await h.orchestrator.intake(noContract(), 'webhook');
+    expect(gh.labelsOn(303)).toContain('autopilot:needs-contract');
+
+    const fixed = await h.orchestrator.intake(
+      issue({ number: 303, body: SEED_ISSUES[0]!.body }),
+      'webhook',
+    );
+
+    expect(fixed.accepted).toBe(true);
+    expect(gh.labelsOn(303)).not.toContain('autopilot:needs-contract');
+  });
+
+  /** An issue edited into a *different* kind of broken is a new thing to say. */
+  it('speaks up again when the reason changes', async () => {
+    const gh = new RecordingGitHub({ 303: ['autopilot'] });
+    const h = harness(undefined, undefined, gh);
+
+    await h.orchestrator.intake(noContract(), 'webhook');
+    await h.orchestrator.intake(
+      issue({ number: 303, body: '```autopilot\nid: X-1\n```' }),
+      'webhook',
+    );
+
+    const reasons = h.store.listEvents(20, 'intake.rejected').map((e) => (e.detail as { reason: string }).reason);
+    expect(reasons).toHaveLength(2);
+    expect(new Set(reasons).size).toBe(2);
+  });
+});

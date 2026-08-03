@@ -520,6 +520,31 @@ export class Store {
   }
 
   /**
+   * Whether this issue has already been refused for this exact reason.
+   *
+   * The scanner re-reads every labelled issue on a cadence, so an issue that
+   * cannot be accepted is re-examined roughly once a minute, forever. Without
+   * this, each sweep appended an event and posted the same comment again: ten
+   * identical refusals on one issue inside twelve minutes, on somebody's real
+   * repository. Refusing repeatedly is correct; *saying so* repeatedly is not.
+   *
+   * Matched on the reason, not just the issue, so an edited issue that now
+   * fails differently is a new thing to say and gets said.
+   */
+  hasRejection(issueNumber: number, reason: string): boolean {
+    const rows = this.db
+      .prepare(
+        `SELECT detail FROM events
+          WHERE type = 'intake.rejected' AND issue_number = ?
+          ORDER BY id DESC LIMIT 30`,
+      )
+      .all(issueNumber) as Row[];
+    return rows.some(
+      (r) => (safeParse(r.detail as string) as { reason?: string } | null)?.reason === reason,
+    );
+  }
+
+  /**
    * Record the session reviewing this pull request, or clear it.
    *
    * Cleared when a change request comes back so the revision gets a fresh

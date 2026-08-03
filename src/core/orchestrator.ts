@@ -181,11 +181,25 @@ export class Orchestrator {
     const parsed = parseContract(issue.body);
     if (!parsed.ok) {
       log.warn({ reason: parsed.reason }, 'intake rejected: invalid contract');
+      metrics.dispatches.inc({ result: 'rejected', category: 'unknown' });
+
+      // Say it once. The scanner re-reads this issue every sweep and will keep
+      // refusing it for as long as the label is on and the contract is not —
+      // which is correct, and which is not a reason to comment again. Ten
+      // identical refusals in twelve minutes is what this looked like before.
+      if (this.store.hasRejection(issue.number, parsed.reason)) {
+        return { accepted: false, reason: parsed.reason };
+      }
+
       this.store.appendEvent({
         issueNumber: issue.number,
         type: 'intake.rejected',
         detail: { reason: parsed.reason },
       });
+      // A label, so the state is visible from the issue list rather than only
+      // to whoever scrolls the comments. An audit that files an issue nothing
+      // can act on is a failure of this system, and it should look like one.
+      await this.github.addLabels(issue.number, ['autopilot:needs-contract']);
       await this.github.comment(
         issue.number,
         [
@@ -197,11 +211,17 @@ export class Orchestrator {
           'contract, so that success can be verified automatically rather than assumed.',
           'Add a fenced <code>autopilot</code> block with `id`, `category`, `severity`,',
           '`targets`, `acceptance` and `verify`, then re-apply the label.',
+          '',
+          'This is said once. The issue will keep being refused until the block is added,',
+          'but Autopilot will not comment again about the same problem.',
         ].join('\n'),
       );
-      metrics.dispatches.inc({ result: 'rejected', category: 'unknown' });
       return { accepted: false, reason: parsed.reason };
     }
+
+    // The contract is there now, so the marker comes off. Leaving it would
+    // leave the issue list saying the opposite of what the record says.
+    await this.github.removeLabel(issue.number, 'autopilot:needs-contract');
 
     const contract = parsed.contract;
     const remediation = this.store.create({
