@@ -36,21 +36,33 @@ console.log(`  generated ${a.generatedAt}   mode ${config.DEVIN_MODE}`);
 console.log(`  ${'─'.repeat(62)}`);
 
 console.log('\n  OUTCOMES');
-console.log(`    pull requests opened .... ${t.prsOpened}`);
-console.log(`    success rate ............ ${pct(a.successRate)}  (of ${t.completed} completed)`);
+console.log(`    pull requests merged .... ${t.prsMerged}  (of ${t.prsOpened} opened)`);
+console.log(`    merge rate .............. ${pct(a.mergeRate)}`);
+console.log(`    success rate ............ ${pct(a.successRate)}  (of ${t.concluded} concluded)`);
 console.log(`    false positives ......... ${t.falsePositives}  (reports correctly rejected)`);
 console.log(`    failed .................. ${t.failed}`);
 console.log(`    timed out ............... ${t.timedOut}`);
+console.log(`    withdrawn ............... ${t.cancelled}  (cancelled; excluded from success rate)`);
 console.log(`    in flight ............... ${t.active}`);
 
-console.log('\n  CYCLE TIME');
-console.log(`    median .................. ${dur(a.cycleTimeSeconds.p50)}`);
-console.log(`    p90 ..................... ${dur(a.cycleTimeSeconds.p90)}`);
-console.log(`    mean .................... ${dur(a.cycleTimeSeconds.mean)}`);
+console.log('\n  LATENCY');
+console.log(`    issue → PR (median) ..... ${dur(a.timeToPrSeconds.p50)}   p90 ${dur(a.timeToPrSeconds.p90)}`);
+console.log(`    PR → merged (median) .... ${dur(a.timeToMergeSeconds.p50)}   human review`);
+console.log(`    full cycle (median) ..... ${dur(a.cycleTimeSeconds.p50)}   p90 ${dur(a.cycleTimeSeconds.p90)}`);
+
+console.log('\n  INDEPENDENT VERIFICATION');
+console.log(`    CI passed ............... ${a.ci.passed}`);
+console.log(`    CI failed ............... ${a.ci.failed}`);
+console.log(`    self-corrections ........ ${a.ci.reworks}  (CI failures fixed by Devin, no human)`);
 
 console.log('\n  COST');
-console.log(`    ACUs consumed ........... ${a.acu.total.toFixed(1)}`);
-console.log(`    ACUs per pull request ... ${a.acu.perPr ? a.acu.perPr.toFixed(1) : '—'}`);
+if (a.acu.reported) {
+  console.log(`    ACUs consumed ........... ${a.acu.total.toFixed(1)}`);
+  console.log(`    ACUs per merged PR ...... ${a.acu.perMergedPr ? a.acu.perMergedPr.toFixed(1) : '—'}`);
+} else {
+  // "Not measured" and "free" are different claims, and only one of them is true.
+  console.log(`    ACUs .................... not reported by the provider for this account`);
+}
 
 if (a.byCategory.length) {
   console.log('\n  BY CATEGORY');
@@ -74,7 +86,7 @@ if (a.throughput.length) {
 }
 
 if (a.failureReasons.length) {
-  console.log('\n  FAILURE REASONS');
+  console.log('\n  WHY THINGS FAILED');
   for (const f of a.failureReasons) {
     console.log(`    ${String(f.count).padStart(3)} × ${f.reason.slice(0, 56)}`);
   }

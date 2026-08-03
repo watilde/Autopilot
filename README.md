@@ -132,12 +132,62 @@ workflow on the fork reads the contract *off the linked issue* and re-runs the
 same `verify` commands against the pull request. One definition of done, checked
 by two parties, one of which has no stake in the answer.
 
+**And it can overrule the agent in either direction.** Success is judged from
+what the session reported about its own work, because when a session ends that is
+the only evidence there is. CI arrives later and is better evidence: it re-runs
+the contract's own commands and has no stake in the answer. That rule has to cut
+both ways, or it is just a rule about which errors we prefer to keep — so a
+record that says `failed` is corrected to `succeeded` when CI later passes on its
+pull request, and the correction is posted to the issue. QUAL-002 is the case in
+point: Devin reported `blocked` because the contract's type-check could not pass,
+the contract was then amended and CI went green on the same PR, while the record
+still said `failed` on the strength of a snapshot taken before any of that. The
+promotion is deliberately narrow — a pull request must exist and CI must have
+passed on it, so nothing that produced no code is ever promoted.
+
 **A CI failure goes back to the agent, not to a person.** This is the part a
 version-bump bot cannot do. The failing log is sent into the same session, which
 still holds the context of the change it made, and it fixes forward on the same
 branch. Capped by `MAX_CI_REWORKS`: an agent that cannot fix its own build twice
 is stuck on something the contract did not anticipate, so the issue gets labelled
 `autopilot:needs-human` rather than looping on ACUs.
+
+**A green pull request can merge itself, and the gate is narrow.** Off by
+default (`AUTO_MERGE`), because every other action here is reversible by a
+reviewer who has not looked yet and this one is not. When it is on, a pull
+request whose contract verification job passed, on a category in
+`AUTO_MERGE_CATEGORIES`, is merged — by **Devin**, not by Autopilot. The session
+holds the branch and opened the PR, so asking it to finish its own work keeps
+one actor responsible end to end and sends the merge through whatever branch
+protection applies to Devin rather than around it via a service token. `security`
+is refused whatever the allowlist says: a passing test suite is not a substitute
+for somebody who understands the threat agreeing that the fix addresses it.
+
+The consequence is that Autopilot can report that it *asked*, never that the PR
+merged. Nothing in that path writes `pr_state` — the merge is read back from
+GitHub by the same poll that watches every other PR, so a merge Devin never
+performed shows up as a pull request still sitting open rather than as a shipped
+fix. That gap is on the dashboard, and it is the honest failure mode.
+
+**And the gap gets a name, not silence.** A merge that has not happened
+`AUTO_MERGE_GRACE_MS` after it was asked for is labelled
+`autopilot:needs-human`, with the session's own explanation quoted verbatim on
+the issue. No attempt is made to classify the refusal: the trigger is the
+observable fact — asked, grace elapsed, still open — and the reason is whatever
+the agent said, because it is the authority on why it did not do something and a
+keyword match on its prose would be this system inventing a reason. Once per
+remediation; Autopilot does not nag.
+
+This is not hypothetical, and it is why the escalation exists. On the first live
+run against PR #10, Devin was asked to merge, ran `gh pr merge`, and was refused
+by **its own tooling**: merging into `main`/`master` is blocked unconditionally,
+keyed on the pull request's base branch, with no setting to relax it and no
+GitHub-side involvement at all. It said so precisely, declined to reach for
+auto-merge as a workaround, and named the two things that would permit a merge —
+retargeting at a non-`master` base, or an automation using its requester's own
+credentials. None of that is a rule any configuration here could have
+anticipated, and without the escalation it would have lived only in a session
+transcript while the issue sat quiet and the pull request sat green.
 
 **Evidence outranks the clock.** A session does not exit the moment it opens a
 pull request — it often stops and asks whether anything else is wanted. So the
@@ -342,17 +392,33 @@ this service claims to have sent and what Devin received would show up.
 
 ```
   OUTCOMES
-    pull requests opened .... 3
-    success rate ............ 80%  (of 5 completed)
+    pull requests merged .... 2  (of 3 opened)
+    merge rate .............. 67%
+    success rate ............ 80%  (of 5 concluded)
     false positives ......... 1  (reports correctly rejected)
     failed .................. 1
+    timed out ............... 0
+    withdrawn ............... 0  (cancelled; excluded from success rate)
+    in flight ............... 0
+
+  LATENCY
+    issue → PR (median) ..... 14.2m   p90 22.0m
+    PR → merged (median) .... 188.4m   human review
+    full cycle (median) ..... 16.8m   p90 24.5m
+
+  INDEPENDENT VERIFICATION
+    CI passed ............... 3
+    CI failed ............... 0
+    self-corrections ........ 1  (CI failures fixed by Devin, no human)
 
   COST
-    ACUs per pull request ... 2.0
+    ACUs consumed ........... 6.0
+    ACUs per merged PR ...... 3.0
 
   BY CATEGORY
     security       ████████████████████████   2 total, 0 PR, 50% success
     code-quality   ████████████████████████   2 total, 2 PR, 100% success
+    dependency     ████████████                1 total, 1 PR, 100% success
 ```
 
 ---
@@ -504,6 +570,9 @@ claim.
 | `AUTOPILOT_LABEL` | `autopilot` | the label that arms an issue |
 | `MAX_CONCURRENT_SESSIONS` | `3` | backpressure on spend |
 | `MAX_CI_REWORKS` | `2` | CI failures handed back to a session before escalating to a human |
+| `AUTO_MERGE` | `false` | let Devin merge its own pull request once CI passes |
+| `AUTO_MERGE_CATEGORIES` | `code-quality` | categories eligible for it; `security` is refused regardless |
+| `AUTO_MERGE_GRACE_MS` | `600000` | after this, an unperformed merge is labelled `autopilot:needs-human` |
 | `RECONCILE_INTERVAL_MS` | `15000` | poll cadence |
 | `SESSION_TIMEOUT_MS` | `3600000` | after this, fail and terminate |
 
@@ -542,7 +611,7 @@ curl -X POST localhost:8080/api/remediations/1/reply \
 
 Two layers, because they fail differently.
 
-**This orchestrator** — `npm test`, 129 tests, no network:
+**This orchestrator** — `npm test`, 150 tests, no network:
 
 ```bash
 npm test
@@ -554,9 +623,16 @@ malformed input, delivery idempotency, the concurrency cap, the full
 intake → dispatch → reconcile lifecycle across every terminal state, the
 finished-without-PR judgement, the operator controls, the review-fix loop
 (a failure reaches the session, a passing build is left alone, the rework cap
-escalates, a second failing run is a new verdict), pull-request lifecycle and
-merge-rate arithmetic, and the two regressions above — evidence outranking the
-clock, and the dedup gate finding a PR held by an older attempt. The webhook
+escalates, a second failing run is a new verdict), CI correcting a stale `failed`
+in the other direction without ever promoting a remediation that produced no pull
+request, the auto-merge gate — including the cases that must *not* merge: off by
+default, `security` refused even when the allowlist names it, asked exactly once
+however often the same green run is re-read — the escalation when a requested
+merge never happens, and its restraint (it waits out the grace period, says
+nothing when the merge did land, and escalates once), pull-request lifecycle and
+merge-rate arithmetic, the exclusion of withdrawn work from every rate and chart
+it would distort, and the two regressions above — evidence outranking the clock, and the dedup gate finding a
+PR held by an older attempt. The webhook
 ingress is exercised through a real Fastify instance, signature and all.
 
 **The remediations themselves** — on the pull request, by
@@ -574,8 +650,10 @@ not from the agent's own report.
 - **Human review feedback, not just CI.** The review-fix loop currently answers
   to the build. `pull_request_review` comments could go back into the session
   the same way, so a reviewer's "why not use X here?" is answered in-session.
-- **Auto-merge the trivial tier.** QUAL-002-class changes with green CI and high
-  confidence could merge unattended; SEC-* never should.
+- **Confidence, not just category, as the auto-merge gate.** The tier is chosen
+  by category today (`AUTO_MERGE_CATEGORIES`), which is a proxy for risk rather
+  than a measure of it. Diff size, files touched, and whether the change is
+  inside a module the contract named would all be better signals.
 - **Cost governance.** ACU budgets per team, with the dashboard showing spend
   against them — blocked today by the provider not reporting ACUs on this plan.
 

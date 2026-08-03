@@ -12,6 +12,19 @@ const bool = (fallback: boolean) =>
     .optional()
     .transform((v) => (v === undefined || v === '' ? fallback : v === 'true' || v === '1'));
 
+const csv = (fallback: string[]) =>
+  z
+    .string()
+    .optional()
+    .transform((v) =>
+      v === undefined || v.trim() === ''
+        ? fallback
+        : v
+            .split(',')
+            .map((s) => s.trim().toLowerCase())
+            .filter(Boolean),
+    );
+
 const int = (fallback: number) =>
   z
     .string()
@@ -56,6 +69,34 @@ const schema = z.object({
    * anticipate, and looping costs ACUs to learn nothing.
    */
   MAX_CI_REWORKS: int(2),
+  /**
+   * Whether a pull request whose CI has gone green may be merged with no human
+   * in the loop.
+   *
+   * Off by default, and the default is the point. Every other action this
+   * system takes is reversible by a reviewer who has not looked yet — a wrong
+   * patch sits in a PR, a wrong state correction is one comment. Merging is the
+   * one step that lands the change in the branch people deploy from, so turning
+   * this on is a deliberate statement that the contract plus its verification
+   * job is the whole gate for the categories below.
+   */
+  AUTO_MERGE: bool(false),
+  /**
+   * Which categories are eligible, lowest-stakes first. `security` is refused
+   * by the orchestrator whatever this list says — see `NEVER_AUTO_MERGE`.
+   */
+  AUTO_MERGE_CATEGORIES: csv(['code-quality']),
+  /**
+   * How long a requested merge may stay unperformed before the issue is handed
+   * to a human.
+   *
+   * Asking is not merging, and the agent can decline — Devin's tooling refuses
+   * to merge into `main`/`master` unconditionally, which is a rule no
+   * configuration here can see coming. Without this, that refusal lives only in
+   * the session transcript: the pull request sits green and open, the issue
+   * says a merge was requested, and nothing says why it never happened.
+   */
+  AUTO_MERGE_GRACE_MS: int(600_000),
   MAX_CONCURRENT_SESSIONS: int(3),
   RECONCILE_INTERVAL_MS: int(15_000),
   SESSION_TIMEOUT_MS: int(3_600_000),

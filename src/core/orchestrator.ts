@@ -44,6 +44,26 @@ export interface IntakeResult {
   remediation?: Remediation;
 }
 
+/** Which green pull requests, if any, may merge without a human. */
+export interface AutoMergePolicy {
+  enabled: boolean;
+  categories: string[];
+  /** How long a requested merge may stay unperformed before a human is asked. */
+  graceMs: number;
+}
+
+/**
+ * Categories that never merge unattended, whatever the configuration says.
+ *
+ * A configuration mistake should not be able to land a security change nobody
+ * read. The value of a security fix is not only that the code is correct — it
+ * is that somebody who understands the threat agreed the fix addresses it, and
+ * a passing test suite cannot stand in for that. So this is a floor in code
+ * rather than a default in `.env`, where a well-meant `AUTO_MERGE_CATEGORIES=*`
+ * could quietly remove it.
+ */
+const NEVER_AUTO_MERGE = new Set(['security']);
+
 export class Orchestrator {
   private timer: NodeJS.Timeout | null = null;
   private ticking = false;
@@ -52,6 +72,11 @@ export class Orchestrator {
     private readonly store: Store,
     private readonly devin: DevinClient,
     private readonly github: GitHubClient,
+    private readonly autoMerge: AutoMergePolicy = {
+      enabled: config.AUTO_MERGE,
+      categories: config.AUTO_MERGE_CATEGORIES,
+      graceMs: config.AUTO_MERGE_GRACE_MS,
+    },
   ) {}
 
   // -------------------------------------------------------------------------
@@ -425,7 +450,19 @@ export class Orchestrator {
 
     if (passed) {
       log.info('ci passed on remediation branch');
-      return { handled: true, reason: 'ci passed', remediationId: r.id };
+      const upgraded = await this.settleOnIndependentVerification(this.store.get(r.id)!);
+      const merge = await this.requestMergeIfEligible(this.store.get(r.id)!);
+      return {
+        handled: true,
+        reason: [
+          'ci passed',
+          upgraded ? 'state corrected to succeeded' : null,
+          merge.requested ? merge.reason : null,
+        ]
+          .filter(Boolean)
+          .join('; '),
+        remediationId: r.id,
+      };
     }
 
     if (!r.devinSessionId) {
@@ -504,6 +541,152 @@ export class Orchestrator {
     );
 
     return { handled: true, reason: 'failure returned to devin', remediationId: updated.id };
+  }
+
+  /**
+   * Let the independent check overrule a stale self-report.
+   *
+   * `judge()` decides success from what the agent said about its own work,
+   * because at the moment a session ends that is the only evidence there is.
+   * CI arrives later and is better: it re-runs the contract's own verify
+   * commands, and it has no stake in the answer.
+   *
+   * The principle that CI outranks the agent's claim has to cut both ways. It
+   * is easy to accept when it demotes a "fixed" that does not build; refusing
+   * to apply it in the other direction would be choosing which direction of
+   * error to keep. QUAL-002 is the case in point: Devin reported `blocked` and
+   * `verification_passed: false`, correctly, because the contract's own
+   * type-check command could not pass. The contract was then fixed, Devin
+   * pushed, and CI went green on the same pull request — while the record
+   * still said `failed` on the strength of a snapshot taken before any of that.
+   *
+   * Deliberately narrow: a pull request must exist, and CI must have passed on
+   * it. Nothing here promotes a remediation that produced no code.
+   */
+  private async settleOnIndependentVerification(r: Remediation): Promise<boolean> {
+    if (!r.prUrl || r.ciStatus !== 'passed') return false;
+    if (r.state === 'succeeded' || r.state === 'cancelled') return false;
+
+    this.store.transition(r.id, 'succeeded', { error: null }, {
+      reason: 'contract verification passed on the pull request',
+      previousState: r.state,
+    });
+    metrics.remediationsCompleted.inc({
+      outcome: 'succeeded',
+      category: r.category ?? 'unknown',
+      severity: r.severity ?? 'unknown',
+    });
+
+    logger.info(
+      { remediation: r.id, issue: r.issueNumber, was: r.state, prUrl: r.prUrl },
+      'ci verified the pull request; corrected state to succeeded',
+    );
+    await this.github.comment(
+      r.issueNumber,
+      [
+        '### ✅ Independently verified',
+        '',
+        `This remediation was recorded as \`${r.state}\` based on what the session reported`,
+        'about itself at the time it ended. The contract verification job has since passed',
+        `on ${r.prUrl}, running the same \`verify\` commands from this issue — so the state`,
+        'has been corrected to `succeeded`.',
+      ].join('\n'),
+    );
+    return true;
+  }
+
+  /**
+   * Ask the session that opened a pull request to merge it, once CI agrees.
+   *
+   * Devin does the merging rather than Autopilot, and that is a deliberate
+   * choice about where authority sits. The session holds the branch, opened the
+   * pull request and knows what the change was for; asking it to finish its own
+   * work keeps one actor responsible for the change end to end, and keeps the
+   * orchestrator's GitHub credentials read-mostly. It also means the merge goes
+   * through whatever branch protection applies to Devin, instead of around it
+   * via a service token.
+   *
+   * The consequence is that this method cannot report a merge, only a request
+   * for one — so it does not pretend to. Nothing here writes `pr_state`;
+   * `syncPullRequests()` reads that back from GitHub like any other observer,
+   * which means a merge Devin never performed shows up as a pull request still
+   * sitting open rather than as a shipped fix. That gap is visible on the
+   * dashboard, and it is the honest failure mode.
+   *
+   * The gate is narrow on purpose: enabled, on an allowlisted category that is
+   * not in `NEVER_AUTO_MERGE`, in `succeeded`, with a pull request still open,
+   * with CI passed, and not already asked.
+   */
+  private async requestMergeIfEligible(
+    r: Remediation,
+  ): Promise<{ requested: boolean; reason: string }> {
+    const category = r.category ?? 'unknown';
+
+    if (!this.autoMerge.enabled) return { requested: false, reason: 'auto-merge is disabled' };
+    if (r.mergeRequestedAt) return { requested: false, reason: 'merge already requested' };
+    if (r.state !== 'succeeded') return { requested: false, reason: `state is ${r.state}` };
+    if (!r.prUrl) return { requested: false, reason: 'no pull request to merge' };
+    if (r.prState && r.prState !== 'open') {
+      return { requested: false, reason: `pull request is already ${r.prState}` };
+    }
+    if (r.ciStatus !== 'passed') return { requested: false, reason: 'ci has not passed' };
+    if (!r.devinSessionId) return { requested: false, reason: 'no session to ask' };
+    if (NEVER_AUTO_MERGE.has(category)) {
+      return { requested: false, reason: `${category} changes never merge unattended` };
+    }
+    if (!this.autoMerge.categories.includes(category)) {
+      return { requested: false, reason: `${category} is not on the auto-merge allowlist` };
+    }
+
+    try {
+      await this.devin.sendMessage(
+        r.devinSessionId,
+        [
+          `The contract verification job has passed on the pull request you opened for issue #${r.issueNumber}.`,
+          '',
+          'It re-ran the same `verify` commands from the issue contract, independently of',
+          'the checks you ran yourself, and they passed. Please merge the pull request:',
+          '',
+          r.prUrl,
+          '',
+          'Merge it as it stands. Do not amend the change, do not rebase it onto other work,',
+          'and do not open a replacement pull request. If GitHub refuses the merge — a',
+          'conflict, a required check that has not reported, a branch protection rule — stop',
+          'and say why. Do not force it through, and do not disable a check to get there.',
+        ].join('\n'),
+      );
+    } catch (err) {
+      // No stamp: a transport failure is not a refusal, and the next poll
+      // should try again rather than leave a green PR sitting forever.
+      logger.warn(
+        { remediation: r.id, issue: r.issueNumber, err: (err as Error).message },
+        'could not reach the session to request a merge',
+      );
+      return { requested: false, reason: 'could not reach the session' };
+    }
+
+    this.store.markMergeRequested(r.id);
+    metrics.autoMerges.inc({ result: 'requested', category });
+    logger.info(
+      { remediation: r.id, issue: r.issueNumber, prUrl: r.prUrl, category },
+      'asked devin to merge its own pull request',
+    );
+
+    await this.github.comment(
+      r.issueNumber,
+      [
+        '### 🤝 Auto-merge requested',
+        '',
+        `The contract verification job passed on ${r.prUrl}, and \`${category}\` is on the`,
+        'auto-merge allowlist, so the Devin session that opened it has been asked to merge it.',
+        '',
+        'Autopilot has not recorded this as merged. It asked, and it now waits to see the',
+        'merge on GitHub like any other observer — if the merge does not happen, this issue',
+        'keeps an open pull request rather than a shipped fix.',
+      ].join('\n'),
+    );
+
+    return { requested: true, reason: 'merge requested from devin' };
   }
 
   /**
@@ -600,6 +783,83 @@ export class Orchestrator {
     return adopted;
   }
 
+  /**
+   * Hand a merge that never happened to a human, with the agent's own reason.
+   *
+   * Asking is not merging, and the gap between the two was the one place this
+   * system could go quiet. A pull request sits green and open, the issue says a
+   * merge was requested, and the reason it did not happen lives in a session
+   * transcript nobody is watching. An escalation nobody is told about is the
+   * same as a failure nobody sees — the review-fix loop already learned that
+   * lesson at `MAX_CI_REWORKS`, and this is the same rule for the same reason.
+   *
+   * No attempt is made to classify the refusal. The trigger is the observable
+   * fact — asked, grace period elapsed, still open — and the explanation is
+   * quoted verbatim from the session, because Devin is the authority on why
+   * Devin did not do something and a keyword match on its prose would be this
+   * system inventing a reason. It earned that design on the first live run:
+   * Devin refused because its own tooling blocks merging into `main`/`master`
+   * unconditionally, a rule no configuration here could have anticipated, and
+   * it said so precisely when asked.
+   *
+   * Once per remediation. Autopilot does not nag, and it does not ask again.
+   */
+  async escalateUnperformedMerges(): Promise<number> {
+    const cutoff = new Date(Date.now() - this.autoMerge.graceMs).toISOString();
+    let escalated = 0;
+
+    for (const r of this.store.listUnperformedMerges(cutoff)) {
+      let explanation: string | null;
+      try {
+        const session = await this.devin.getSession(r.devinSessionId!);
+        explanation = session.lastMessage;
+      } catch (err) {
+        // No stamp: if the session cannot be read, the escalation is owed a
+        // reason it does not have yet, and a later tick can still collect it.
+        logger.debug(
+          { remediation: r.id, err: (err as Error).message },
+          'could not read the session while escalating an unperformed merge',
+        );
+        continue;
+      }
+
+      this.store.markMergeEscalated(r.id, explanation);
+      metrics.autoMerges.inc({ result: 'escalated', category: r.category ?? 'unknown' });
+      escalated++;
+
+      logger.warn(
+        { remediation: r.id, issue: r.issueNumber, prUrl: r.prUrl, requestedAt: r.mergeRequestedAt },
+        'requested merge never happened; escalating to a human',
+      );
+
+      await this.github.addLabels(r.issueNumber, ['autopilot:needs-human']);
+      await this.github.comment(
+        r.issueNumber,
+        [
+          '### 🙋 The merge needs a human',
+          '',
+          `Autopilot asked the Devin session to merge ${r.prUrl} after the contract`,
+          'verification job passed. The pull request is still open, so the merge did not',
+          'happen, and Autopilot cannot complete this itself — it asks, it does not merge.',
+          '',
+          '**What the session said when asked:**',
+          '',
+          explanation
+            ? explanation
+                .trim()
+                .split('\n')
+                .map((l) => `> ${l}`)
+                .join('\n')
+            : '> _The session gave no answer that could be read back._',
+          '',
+          'The pull request is unchanged and still green. Someone with merge rights needs',
+          'to click merge. Autopilot will not ask again.',
+        ].join('\n'),
+      );
+    }
+    return escalated;
+  }
+
   async syncPullRequests(): Promise<number> {
     if (!this.github.enabled) return 0;
     let changed = 0;
@@ -649,7 +909,15 @@ export class Orchestrator {
 
       const run = await this.github.latestWorkflowRun(branch);
       if (!run || run.status !== 'completed' || !run.conclusion) continue;
-      if (run.id === r.ciRunId) continue; // already accounted for
+      if (run.id === r.ciRunId) {
+        // Already counted, but the verdict may still be owed an effect — a pass
+        // recorded before these rules existed, or before the state it corrects.
+        // Both are idempotent, so re-offering the same run costs nothing.
+        const settled = await this.settleOnIndependentVerification(r);
+        const merge = await this.requestMergeIfEligible(this.store.get(r.id)!);
+        if (settled || merge.requested) handled++;
+        continue;
+      }
       // Cancelled and skipped runs are not verdicts on the change.
       if (run.conclusion !== 'success' && run.conclusion !== 'failure') continue;
 
@@ -957,6 +1225,9 @@ export class Orchestrator {
       await this.adoptOrphanedPullRequests();
       await this.syncPullRequests();
       await this.syncCiStatus();
+      // After syncPullRequests, so a merge that did land is recorded first and
+      // never escalated as if it had not.
+      await this.escalateUnperformedMerges();
       await this.dispatch();
       metrics.reconcilerRuns.inc({ result: 'ok' });
     } catch (err) {

@@ -80,6 +80,23 @@ export const reworks = new Counter({
   registers: [registry],
 });
 
+/**
+ * Auto-merge attempts by disposition. Counted where Autopilot acts, never where
+ * a merge lands — `autopilot_pull_requests_total{state="merged"}` is the one
+ * that says the change actually shipped, and the gap between `requested` here
+ * and that one is exactly the thing worth alerting on.
+ *
+ * `escalated` is that gap made explicit: asked, never performed, handed to a
+ * human. A deployment where it dominates `requested` has an auto-merge policy
+ * that does not work, which is worth knowing before it is worth debugging.
+ */
+export const autoMerges = new Counter({
+  name: 'autopilot_auto_merges_total',
+  help: 'Auto-merge attempts by disposition: requested from a session, or escalated to a human',
+  labelNames: ['result', 'category'] as const,
+  registers: [registry],
+});
+
 export const devinApiErrors = new Counter({
   name: 'autopilot_devin_api_errors_total',
   help: 'Errors returned by the Devin API',

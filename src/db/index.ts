@@ -38,6 +38,8 @@ CREATE TABLE IF NOT EXISTS remediations (
   pr_merged_at       TEXT,
   ci_status          TEXT,
   reworks            INTEGER NOT NULL DEFAULT 0,
+  merge_requested_at TEXT,
+  merge_escalated_at TEXT,
   structured_output  TEXT,
   attempt            INTEGER NOT NULL DEFAULT 1,
   error              TEXT,
@@ -92,6 +94,8 @@ const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
   ['remediations', 'reworks', 'INTEGER NOT NULL DEFAULT 0'],
   ['remediations', 'pr_checked_at', 'TEXT'],
   ['remediations', 'ci_run_id', 'INTEGER'],
+  ['remediations', 'merge_requested_at', 'TEXT'],
+  ['remediations', 'merge_escalated_at', 'TEXT'],
 ];
 
 type Row = Record<string, unknown>;
@@ -118,6 +122,8 @@ function toRemediation(r: Row): Remediation {
     ciStatus: (r.ci_status as Remediation['ciStatus']) ?? null,
     ciRunId: (r.ci_run_id as number) ?? null,
     reworks: (r.reworks as number) ?? 0,
+    mergeRequestedAt: (r.merge_requested_at as string) ?? null,
+    mergeEscalatedAt: (r.merge_escalated_at as string) ?? null,
     structuredOutput: r.structured_output ? safeParse(r.structured_output as string) : null,
     attempt: r.attempt as number,
     error: (r.error as string) ?? null,
@@ -430,6 +436,71 @@ export class Store {
       issueNumber: current.issueNumber,
       type: `ci.${status}`,
       detail,
+    });
+    return this.get(id)!;
+  }
+
+  /**
+   * Record that Devin was asked to merge, so it is only ever asked once.
+   *
+   * The stamp is not evidence of a merge, and nothing should read it as one:
+   * `pr_state` still comes from GitHub. Its whole job is to keep a poll that
+   * runs every fifteen seconds from sending the same instruction forever.
+   */
+  markMergeRequested(id: number): Remediation {
+    const current = this.get(id);
+    if (!current) throw new Error(`remediation ${id} not found`);
+    const ts = nowIso();
+    this.db
+      .prepare('UPDATE remediations SET merge_requested_at = ?, updated_at = ? WHERE id = ?')
+      .run(ts, ts, id);
+    this.appendEvent({
+      remediationId: id,
+      issueNumber: current.issueNumber,
+      type: 'merge.requested',
+      detail: { prUrl: current.prUrl, category: current.category },
+    });
+    return this.get(id)!;
+  }
+
+  /**
+   * Merges that were asked for and never happened.
+   *
+   * `requestedBefore` is a grace period, not a timeout on the agent: a session
+   * that is going to merge does it in a minute or two, so anything still open
+   * well after the request is a refusal, a crash, or a message that never
+   * landed. Which of those it is comes from the session, not from here.
+   */
+  listUnperformedMerges(requestedAtOrBefore: string): Remediation[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM remediations
+          WHERE merge_requested_at IS NOT NULL
+            -- Inclusive, so a zero grace period means "immediately" rather than
+            -- "never, if the clock did not tick between the two statements".
+            AND merge_requested_at <= ?
+            AND merge_escalated_at IS NULL
+            AND devin_session_id IS NOT NULL
+            AND (pr_state IS NULL OR pr_state = 'open')
+          ORDER BY merge_requested_at ASC`,
+      )
+      .all(requestedAtOrBefore) as Row[];
+    return rows.map(toRemediation);
+  }
+
+  /** Record that the unperformed merge was handed to a human. */
+  markMergeEscalated(id: number, reason: string | null): Remediation {
+    const current = this.get(id);
+    if (!current) throw new Error(`remediation ${id} not found`);
+    const ts = nowIso();
+    this.db
+      .prepare('UPDATE remediations SET merge_escalated_at = ?, updated_at = ? WHERE id = ?')
+      .run(ts, ts, id);
+    this.appendEvent({
+      remediationId: id,
+      issueNumber: current.issueNumber,
+      type: 'merge.escalated',
+      detail: { prUrl: current.prUrl, requestedAt: current.mergeRequestedAt, reason },
     });
     return this.get(id)!;
   }

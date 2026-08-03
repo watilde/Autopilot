@@ -89,6 +89,13 @@ export interface Remediation {
   ciRunId: number | null;
   /** How many times CI sent this back to Devin for a self-correction. */
   reworks: number;
+  /**
+   * When Devin was asked to merge the pull request. A record that we asked,
+   * not a claim that it merged — the merge itself is observed from GitHub.
+   */
+  mergeRequestedAt: string | null;
+  /** When the unperformed merge was handed to a human. Stamped once. */
+  mergeEscalatedAt: string | null;
   structuredOutput: unknown | null;
   attempt: number;
   error: string | null;

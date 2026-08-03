@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { Store } from '../src/db/index.js';
 import { DevinMockClient } from '../src/devin/mock.js';
 import { GitHubClient, type IssueRef } from '../src/github/client.js';
-import { Orchestrator } from '../src/core/orchestrator.js';
+import { Orchestrator, type AutoMergePolicy } from '../src/core/orchestrator.js';
 import { SEED_ISSUES } from '../scripts/issues.js';
 
 function issue(overrides: Partial<IssueRef> = {}): IssueRef {
@@ -17,12 +17,14 @@ function issue(overrides: Partial<IssueRef> = {}): IssueRef {
   };
 }
 
-function harness(mock?: DevinMockClient) {
+function harness(mock?: DevinMockClient, autoMerge?: AutoMergePolicy) {
   const store = new Store(':memory:');
   const devin = mock ?? new DevinMockClient({ pollsUntilTerminal: 1, forceOutcome: 'fixed' });
   // No token → GitHub is inert, which is exactly the demo/offline path.
   const github = new GitHubClient(undefined, 'watilde', 'superset');
-  return { store, devin, orchestrator: new Orchestrator(store, devin, github) };
+  // Omitting the policy leaves the orchestrator on its shipped default, which
+  // is how the "off unless asked for" tests get their subject.
+  return { store, devin, orchestrator: new Orchestrator(store, devin, github, autoMerge) };
 }
 
 describe('intake', () => {
@@ -547,6 +549,51 @@ describe('review-fix loop', () => {
     expect(h.devin.messages).toHaveLength(2);
   });
 
+  /**
+   * The rule that CI outranks the agent's self-report has to work in both
+   * directions, or it is just a rule about which errors we prefer to keep.
+   * QUAL-002 hit this: Devin reported `blocked` because the contract's own
+   * type-check could not pass, the contract was fixed, and CI then went green
+   * on the same pull request while the record still said `failed`.
+   */
+  it('corrects a failed record when CI later passes on its pull request', async () => {
+    const h = await shipped();
+    const id = h.remediation.id;
+    h.store.transition(id, 'failed', { error: 'Devin reported it was blocked' });
+
+    const result = await h.orchestrator.handleCiResult({
+      branch: h.branch,
+      conclusion: 'success',
+      runId: 77,
+      runUrl: null,
+    });
+
+    expect(result.reason).toMatch(/corrected/);
+    const r = h.store.get(id)!;
+    expect(r.state).toBe('succeeded');
+    expect(r.error).toBeNull();
+  });
+
+  it('does not promote a remediation that produced no pull request', async () => {
+    const h = harness(new DevinMockClient({ pollsUntilTerminal: 1, forceOutcome: 'expired' }));
+    await h.orchestrator.intake(issue(), 'test');
+    await h.orchestrator.dispatch();
+    await h.orchestrator.reconcile();
+    await h.orchestrator.reconcile();
+
+    const r = h.store.listAll()[0]!;
+    expect(r.state).toBe('failed');
+    expect(r.prUrl).toBeNull();
+
+    await h.orchestrator.handleCiResult({
+      branch: `autopilot/sec-001-issue-${r.issueNumber}`,
+      conclusion: 'success',
+      runId: 78,
+      runUrl: null,
+    });
+    expect(h.store.get(r.id)!.state).toBe('failed');
+  });
+
   it('ignores CI on a branch it does not own', async () => {
     const h = await shipped();
     const result = await h.orchestrator.handleCiResult({
@@ -557,6 +604,236 @@ describe('review-fix loop', () => {
     });
     expect(result.handled).toBe(false);
     expect(h.devin.messages).toHaveLength(0);
+  });
+});
+
+/**
+ * Merging is the one irreversible step in this system: a wrong patch sits in a
+ * pull request until somebody looks, a wrong state correction is one comment,
+ * but a merge lands the change in the branch people deploy from. So the gate
+ * gets its own tests, and most of them are about the cases that must *not*
+ * merge.
+ */
+describe('auto-merge', () => {
+  const CODE_QUALITY: AutoMergePolicy = { enabled: true, categories: ['code-quality'], graceMs: 600_000 };
+
+  /** QUAL-001 — the real PR #10's contract, and a category that is allowlisted. */
+  const qualityIssue = () =>
+    issue({
+      number: 103,
+      title: SEED_ISSUES[2]!.title,
+      body: SEED_ISSUES[2]!.body,
+      labels: ['autopilot', 'code-quality'],
+    });
+
+  // The policy is always passed explicitly: `undefined` has to mean "leave the
+  // orchestrator on its own default", and a default parameter would swallow it.
+  async function green(policy: AutoMergePolicy | undefined, seed = qualityIssue()) {
+    const h = harness(new DevinMockClient({ pollsUntilTerminal: 1, forceOutcome: 'fixed' }), policy);
+    await h.orchestrator.intake(seed, 'test');
+    await h.orchestrator.dispatch();
+    await h.orchestrator.reconcile();
+    await h.orchestrator.reconcile();
+
+    const r = h.store.listAll()[0]!;
+    expect(r.state).toBe('succeeded');
+    expect(r.prUrl).toBeTruthy();
+    return {
+      ...h,
+      remediation: r,
+      branch: `autopilot/${r.contractId!.toLowerCase()}-issue-${r.issueNumber}`,
+      pass: (runId = 90) =>
+        h.orchestrator.handleCiResult({
+          branch: `autopilot/${r.contractId!.toLowerCase()}-issue-${r.issueNumber}`,
+          conclusion: 'success',
+          runId,
+          runUrl: null,
+        }),
+    };
+  }
+
+  it('asks the session that opened the pull request to merge it', async () => {
+    const h = await green(CODE_QUALITY);
+    const result = await h.pass();
+
+    expect(result.reason).toMatch(/merge requested/);
+    const sent = h.devin.messages.at(-1)!;
+    expect(sent.sessionId).toBe(h.remediation.devinSessionId);
+    expect(sent.message).toContain(h.remediation.prUrl!);
+    expect(sent.message).toMatch(/merge/i);
+    expect(h.store.get(h.remediation.id)!.mergeRequestedAt).toBeTruthy();
+  });
+
+  /**
+   * The instruction has to rule out the shortcuts, because "get this merged" is
+   * exactly the prompt under which an agent starts disabling checks.
+   */
+  it('tells the session not to force the merge or weaken a check to get it', async () => {
+    const h = await green(CODE_QUALITY);
+    await h.pass();
+
+    const sent = h.devin.messages.at(-1)!.message;
+    expect(sent).toMatch(/do not force it through/i);
+    expect(sent).toMatch(/do not disable a check/i);
+    expect(sent).toMatch(/stop\s+and say why/i);
+  });
+
+  /**
+   * Asking is not merging. If Devin never performs it, the honest reading is a
+   * pull request still sitting open — not a shipped fix — and only GitHub gets
+   * to move `pr_state`.
+   */
+  it('records that it asked, never that the pull request merged', async () => {
+    const h = await green(CODE_QUALITY);
+    await h.pass();
+
+    const r = h.store.get(h.remediation.id)!;
+    expect(r.mergeRequestedAt).toBeTruthy();
+    expect(r.prState).toBe('open');
+    expect(r.prMergedAt).toBeNull();
+  });
+
+  it('is off unless it was asked for', async () => {
+    const h = await green(undefined); // orchestrator default: AUTO_MERGE is false
+    const result = await h.pass();
+
+    expect(result.reason).not.toMatch(/merge/);
+    expect(h.devin.messages).toHaveLength(0);
+    expect(h.store.get(h.remediation.id)!.mergeRequestedAt).toBeNull();
+  });
+
+  /**
+   * The floor that a configuration mistake must not be able to remove. A
+   * passing test suite is not the thing that makes a security fix safe to ship
+   * — somebody who understands the threat agreeing that it addresses it is.
+   */
+  it('refuses a security change even when the allowlist names it', async () => {
+    const h = await green({ enabled: true, categories: ['security', 'code-quality'], graceMs: 600_000 }, issue());
+    expect(h.remediation.category).toBe('security');
+
+    await h.pass();
+    expect(h.devin.messages).toHaveLength(0);
+    expect(h.store.get(h.remediation.id)!.mergeRequestedAt).toBeNull();
+  });
+
+  it('leaves a category off the allowlist alone', async () => {
+    const h = await green({ enabled: true, categories: ['dependency'], graceMs: 600_000 });
+    await h.pass();
+
+    expect(h.devin.messages).toHaveLength(0);
+    expect(h.store.get(h.remediation.id)!.mergeRequestedAt).toBeNull();
+  });
+
+  /**
+   * CI is polled every reconcile tick and the same green run is re-read every
+   * time. Without the stamp this would resend the instruction forever, which is
+   * both noise in the session and a standing invitation to merge something the
+   * operator has since closed.
+   */
+  it('asks exactly once, however often the same green run is re-read', async () => {
+    const h = await green(CODE_QUALITY);
+    await h.pass();
+    expect(h.devin.messages).toHaveLength(1);
+    const stamp = h.store.get(h.remediation.id)!.mergeRequestedAt;
+
+    await h.pass();
+    await h.pass(91);
+
+    expect(h.devin.messages).toHaveLength(1);
+    expect(h.store.get(h.remediation.id)!.mergeRequestedAt).toBe(stamp);
+  });
+
+  it('does not chase a pull request that is already closed', async () => {
+    const h = await green(CODE_QUALITY);
+    h.store.recordPullRequest(h.remediation.id, { state: 'closed' });
+
+    await h.pass();
+    expect(h.devin.messages).toHaveLength(0);
+    expect(h.store.get(h.remediation.id)!.mergeRequestedAt).toBeNull();
+  });
+
+  it('does not ask while CI is still failing', async () => {
+    const h = await green(CODE_QUALITY);
+    await h.orchestrator.handleCiResult({
+      branch: h.branch,
+      conclusion: 'failure',
+      runId: 92,
+      runUrl: null,
+    });
+
+    // One message, and it is the rework — not a merge request.
+    expect(h.devin.messages).toHaveLength(1);
+    expect(h.devin.messages[0]!.message).toMatch(/CI failed/);
+    expect(h.store.get(h.remediation.id)!.mergeRequestedAt).toBeNull();
+  });
+
+  /**
+   * The gap where this system could go quiet: asked, never merged, and the
+   * reason only in a session transcript nobody watches.
+   *
+   * Devin's tooling refuses to merge into `main`/`master` unconditionally —
+   * discovered on the first live run, and not a rule any configuration here
+   * could have anticipated. So the trigger is the observable fact, not a guess
+   * about the prose: asked, grace elapsed, still open.
+   */
+  describe('when the merge never happens', () => {
+    const NO_GRACE: AutoMergePolicy = { ...CODE_QUALITY, graceMs: 0 };
+
+    async function asked(policy: AutoMergePolicy = NO_GRACE) {
+      const h = await green(policy);
+      await h.pass();
+      expect(h.store.get(h.remediation.id)!.mergeRequestedAt).toBeTruthy();
+      return h;
+    }
+
+    const escalation = (h: Awaited<ReturnType<typeof asked>>) =>
+      h.store.listEvents(50).find((e) => e.type === 'merge.escalated');
+
+    it('hands it to a human, quoting what the session said', async () => {
+      const h = await asked();
+      expect(await h.orchestrator.escalateUnperformedMerges()).toBe(1);
+
+      const r = h.store.get(h.remediation.id)!;
+      expect(r.mergeEscalatedAt).toBeTruthy();
+      // The agent's own words are the record — Autopilot does not paraphrase a
+      // refusal it did not make.
+      expect((escalation(h)!.detail as { reason: string }).reason).toBeTruthy();
+    });
+
+    it('waits out the grace period before deciding the merge failed', async () => {
+      const h = await asked(CODE_QUALITY); // ten minutes, so nothing is due yet
+      expect(await h.orchestrator.escalateUnperformedMerges()).toBe(0);
+      expect(h.store.get(h.remediation.id)!.mergeEscalatedAt).toBeNull();
+    });
+
+    it('says nothing when the merge did happen', async () => {
+      const h = await asked();
+      h.store.recordPullRequest(h.remediation.id, {
+        state: 'merged',
+        mergedAt: '2026-08-02T20:00:00.000Z',
+      });
+
+      expect(await h.orchestrator.escalateUnperformedMerges()).toBe(0);
+      expect(h.store.get(h.remediation.id)!.mergeEscalatedAt).toBeNull();
+    });
+
+    it('escalates once and then stops — Autopilot does not nag', async () => {
+      const h = await asked();
+      expect(await h.orchestrator.escalateUnperformedMerges()).toBe(1);
+      const stamp = h.store.get(h.remediation.id)!.mergeEscalatedAt;
+
+      expect(await h.orchestrator.escalateUnperformedMerges()).toBe(0);
+      expect(h.store.get(h.remediation.id)!.mergeEscalatedAt).toBe(stamp);
+    });
+
+    /** Nothing was asked of it, so there is nothing to escalate. */
+    it('leaves an open pull request alone when no merge was ever requested', async () => {
+      const h = await green(undefined); // auto-merge off
+      await h.pass();
+
+      expect(await h.orchestrator.escalateUnperformedMerges()).toBe(0);
+      expect(h.store.get(h.remediation.id)!.mergeEscalatedAt).toBeNull();
+    });
   });
 });
 

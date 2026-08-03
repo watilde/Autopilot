@@ -73,6 +73,55 @@ describe('analytics', () => {
     expect(a.byState.find((s) => s.state === 'cancelled')?.count).toBe(1);
   });
 
+  /**
+   * The same argument applies to every chart the withdrawal would appear in,
+   * not just the headline rate. A duplicate stopped ten seconds after it was
+   * queued is a very fast nothing: averaged into cycle time it makes the system
+   * look quicker than it is, plotted on the throughput bars it reads as work
+   * delivered, and its cancellation note filed under "why things failed" sends
+   * the next reader after a problem nobody has.
+   */
+  it('keeps withdrawn work out of cycle time, throughput and failure reasons', () => {
+    const store = new Store(':memory:');
+    const r = store.create({
+      repo: 'watilde/superset',
+      issueNumber: 9,
+      issueUrl: '',
+      title: 'already fixed upstream',
+      contractId: 'DEP-001',
+      category: 'dependency',
+      severity: 'medium',
+      triggeredBy: 'test',
+    });
+    store.transition(r.id, 'cancelled', { error: 'duplicate of #4' });
+
+    const a = buildAnalytics(store);
+    expect(a.totals.completed).toBe(1); // it stopped, and stays visible
+    expect(a.totals.concluded).toBe(0); // but it was never judged
+    // Null, not zero: nothing here was ever timed, and a zero would be a claim.
+    expect(a.cycleTimeSeconds.p50).toBeNull();
+    expect(a.cycleTimeSeconds.mean).toBeNull();
+    expect(a.throughput).toEqual([]);
+    expect(a.failureReasons).toEqual([]);
+  });
+
+  it('files an operator note under withdrawals, not under failures', () => {
+    const { store, ids } = seed();
+    store.transition(ids.d, 'cancelled', { error: 'paused for budget' });
+
+    const reasons = buildAnalytics(store).failureReasons.map((f) => f.reason);
+    expect(reasons).toEqual(['verification commands did not pass']);
+  });
+
+  it('reports no category success rate when that category was only withdrawn', () => {
+    const { store, ids } = seed();
+    store.transition(ids.d, 'cancelled', { error: 'duplicate of #4' });
+
+    const dep = buildAnalytics(store).byCategory.find((c) => c.category === 'dependency')!;
+    expect(dep.total).toBe(1); // the attempt is still counted
+    expect(dep.successRate).toBeNull(); // nothing in it reached a verdict
+  });
+
   it('reports null rates rather than NaN when nothing has completed', () => {
     const store = new Store(':memory:');
     store.create({

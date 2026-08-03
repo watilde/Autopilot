@@ -83,6 +83,10 @@ export interface AnalyticsSnapshot {
 }
 
 const TERMINAL = `('succeeded','failed','timed_out','cancelled')`;
+/** Work that reached a verdict. TERMINAL minus withdrawals — see `concluded`. */
+const CONCLUDED = `('succeeded','failed','timed_out')`;
+/** The states that represent a loss. A withdrawal is not one of them. */
+const FAILED = `('failed','timed_out')`;
 const ACTIVE = `('queued','dispatching','running','blocked')`;
 
 function num(v: unknown): number {
@@ -140,13 +144,16 @@ export function buildAnalytics(store: Store): AnalyticsSnapshot {
   const falsePositives = num(totalsRow.false_positives);
   const acuTotal = num(totalsRow.acu_total);
 
-  // Cycle time over completed work only. Including in-flight items would make
-  // the number drift down every time a new issue is labelled.
+  // Cycle time over work that reached a verdict. Including in-flight items
+  // would make the number drift down every time a new issue is labelled, and
+  // including cancellations would do it too: a duplicate stopped ten seconds
+  // after it was queued is a very fast nothing, and averaging it in makes the
+  // system look quicker than it is.
   const durations = store
     .query(
       `SELECT (julianday(completed_at) - julianday(created_at)) * 86400.0 AS secs
          FROM remediations
-        WHERE completed_at IS NOT NULL AND state IN ${TERMINAL}`,
+        WHERE completed_at IS NOT NULL AND state IN ${CONCLUDED}`,
     )
     .map((r) => num(r.secs))
     .filter((n) => Number.isFinite(n) && n >= 0)
@@ -182,15 +189,17 @@ export function buildAnalytics(store: Store): AnalyticsSnapshot {
       SELECT COALESCE(category, 'unknown') AS category,
              COUNT(*) AS total,
              SUM(CASE WHEN state = 'succeeded' THEN 1 ELSE 0 END) AS succeeded,
-             SUM(CASE WHEN state IN ('failed','timed_out') THEN 1 ELSE 0 END) AS failed,
+             SUM(CASE WHEN state IN ${FAILED} THEN 1 ELSE 0 END) AS failed,
              SUM(CASE WHEN pr_url IS NOT NULL AND pr_url != '' THEN 1 ELSE 0 END) AS prs,
-             SUM(CASE WHEN state IN ${TERMINAL} THEN 1 ELSE 0 END) AS completed
+             -- Same denominator as the headline rate: work that reached a
+             -- verdict. Cancellations are withdrawals, not losses.
+             SUM(CASE WHEN state IN ${CONCLUDED} THEN 1 ELSE 0 END) AS concluded
         FROM remediations
        GROUP BY category
        ORDER BY total DESC
     `)
     .map((r) => {
-      const c = num(r.completed);
+      const c = num(r.concluded);
       return {
         category: String(r.category),
         total: num(r.total),
@@ -215,6 +224,7 @@ export function buildAnalytics(store: Store): AnalyticsSnapshot {
              SUM(CASE WHEN state = 'succeeded' THEN 1 ELSE 0 END) AS succeeded
         FROM remediations
        WHERE completed_at IS NOT NULL
+         AND state IN ${CONCLUDED}
        GROUP BY day
        ORDER BY day DESC
        LIMIT 14
@@ -226,11 +236,16 @@ export function buildAnalytics(store: Store): AnalyticsSnapshot {
     }))
     .reverse();
 
+  // Only states that represent a loss. An operator's reason for cancelling —
+  // "paused for budget", "duplicate" — is not a failure mode, and listing it
+  // under "why things failed" sends whoever reads this chart after the wrong
+  // problem.
   const failureReasons = store
     .query(`
       SELECT error AS reason, COUNT(*) AS c
         FROM remediations
        WHERE error IS NOT NULL AND error != ''
+         AND state IN ${FAILED}
        GROUP BY error
        ORDER BY c DESC
        LIMIT 10

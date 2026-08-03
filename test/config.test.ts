@@ -19,6 +19,28 @@ describe('config parsing', () => {
     expect(cfg.AUTOPILOT_LABEL).toBe('autopilot');
   });
 
+  /**
+   * The one irreversible action in the system defaults to off. A deployment
+   * that merges unattended has to have said so.
+   */
+  it('leaves auto-merge off unless the environment turns it on', () => {
+    expect(__buildConfig(base).AUTO_MERGE).toBe(false);
+    expect(__buildConfig({ ...base, AUTO_MERGE: 'true' }).AUTO_MERGE).toBe(true);
+  });
+
+  it('reads the auto-merge allowlist as a comma-separated list', () => {
+    expect(__buildConfig(base).AUTO_MERGE_CATEGORIES).toEqual(['code-quality']);
+    expect(
+      __buildConfig({ ...base, AUTO_MERGE_CATEGORIES: 'code-quality, Dependency ' })
+        .AUTO_MERGE_CATEGORIES,
+    ).toEqual(['code-quality', 'dependency']);
+    // Empty means "use the default", not "allow nothing" — an env file with a
+    // blank line under the key should not silently change behaviour.
+    expect(__buildConfig({ ...base, AUTO_MERGE_CATEGORIES: '' }).AUTO_MERGE_CATEGORIES).toEqual([
+      'code-quality',
+    ]);
+  });
+
   it('rejects a malformed value', () => {
     expect(() => __buildConfig({ ...base, PORT: 'not-a-number' })).toThrow(/Invalid configuration/);
   });
