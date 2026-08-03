@@ -17,39 +17,51 @@ without one, so there is one place to correct when they move.
 
 | Section | Slides |
 |---|---|
-| 0:00 – 0:40 · What | 1 · 2 · 3 |
-| 0:40 – 2:00 · How — the demo | 6 · 4, then 8 (live demo instead, if recording) |
-| 2:00 – 3:10 · How — the decision | 5 · 7 · 11 |
-| 3:10 – 4:20 · Why Devin | 9 · 10 |
-| 4:20 – 5:00 · When — next | 12 · 13 |
+| 0:00 – 0:45 · What | 1 · 2 · 3 |
+| 0:45 – 2:15 · How — the demo | 4 · 7 · 9 (live dashboard instead, if presenting) |
+| 2:15 – 3:15 · How — the decision | 6 · 8 · 12 |
+| 3:15 – 4:20 · Why Devin | 10 · 11 |
+| 4:20 – 5:00 · When — next | 13 · 14 |
 
 Presenting from the deck: <kbd>N</kbd> shows the stage direction for each slide —
 how to land it, what not to claim. Those are deliberately not the words to say;
 the words are here.
 
-**Before recording**, have these open in tabs:
+## Before recording
 
-1. `http://localhost:8080` — the dashboard, **scrolled past the KPI row** so the
-   verification and refusal sections are what lands. Check it is reading the
-   real record before you start: an empty database renders every local figure as
-   a dash while the "as reported by Devin" panel fills in, which looks broken
-   rather than empty. Seed with `npm run simulate` for the mock walkthrough.
-2. https://github.com/watilde/superset/issues — the five issues, all
-   `autopilot:succeeded`
-3. https://github.com/watilde/superset/pull/8 — DEP-001, the audit Devin wrote
+1. `http://localhost:8080` — **scrolled past the KPI row**, so the verification
+   and refusal sections are what lands. Check it is reading the real record
+   first: an empty database renders every local figure as a dash while the "as
+   reported by Devin" panel fills in from the API, which reads as broken rather
+   than as empty.
+2. https://github.com/watilde/superset/issues/11 — the issue **Devin filed**,
+   and https://github.com/watilde/superset/pull/12 — the PR that closed it
+3. https://github.com/watilde/superset/pull/14 — REL-002, where the reviewing
+   agent explains why it cannot approve
 4. https://github.com/watilde/superset/issues/5 — QUAL-002, the pushback thread
 5. https://github.com/watilde/superset/issues/3 — QUAL-001, the merge-refusal thread
 6. `src/core/orchestrator.ts` — at `settleOnIndependentVerification`
 7. A terminal in the repo
+
+**`npm run report` reads SQLite directly and is the fallback if the dashboard is
+slow.** It reads the *host* database, which is a snapshot — if the container has
+worked since, the two disagree and the demo contradicts itself on camera. Re-sync
+before recording:
+
+```bash
+for f in autopilot.db autopilot.db-wal autopilot.db-shm; do
+  docker cp "autopilot-autopilot-1:/data/$f" "data/$f"
+done
+npm run report      # must match the dashboard
+```
 
 One rule for the recording: **do not narrate what is on screen.** Say the thing
 the screen cannot say.
 
 ---
 
-## 0:00 – 0:40 · What
+## 0:00 – 0:45 · What
 <!-- Slides 1 → 2 → 3. Move on "So the obvious move…" and on "This is Autopilot." -->
-
 
 > "Every engineering org has a backlog of work that is real, small, and never
 > urgent enough. Known vulnerabilities. A dependency pin nobody can justify
@@ -62,189 +74,147 @@ the screen cannot say.
 > agent tells you it fixed something. How do you know?**
 >
 > This is Autopilot. GitHub issues in, Devin sessions out, pull requests and
-> metrics observable end to end. Five real issues on a fork of Apache Superset —
-> two security, two code quality, one investigation — all five shipped and
-> merged."
+> metrics observable end to end. Seven issues on a fork of Apache Superset, seven
+> pull requests, all merged — and **two of those issues nobody wrote. Devin found
+> them itself.**"
 
-Show: the fork's issue list, five green `autopilot:succeeded` labels.
-
----
-
-## 0:40 – 2:00 · How — the demo
-<!-- Recording: run it live. Presenting: slide 6 for the contract, slide 4 for
-     what came back, slide 8 for the numbers, and offer slide 13 to anyone who
-     wants to run it themselves. -->
-
-Run the whole thing live, mock mode, no credentials:
-
-```bash
-docker compose up --build -d
-npm run simulate
-```
-
-> "That is five signed webhooks. Nothing inside the server is stubbed — the
-> signature is verified, the contract is parsed off the issue body, sessions are
-> created, the reconciler polls them. Only GitHub and Devin are standing in.
->
-> The thing to notice is the label an issue has to carry, and the block inside
-> it."
-
-Show the contract block in an issue:
-
-> "Every issue carries a machine-readable contract: what to change, what *not*
-> to touch, and the exact commands that constitute done. That block is not
-> decoration. Devin runs those commands in its sandbox. And a **CI job on the
-> pull request reads the same block off the same issue and runs the same
-> commands again** — one definition of done, checked by two parties, one of
-> which has no stake in the answer."
-
-Then what came back — open PR #8, or slide 4, which is the same body:
-
-> "This is the pull request for the dependency issue. The pin says
-> `setuptools<81`, and the comment justifying it names a package that is not in
-> this repository's dependency tree. Nobody had ever measured it. Devin did:
-> `pkg_resources` is removed in 82, not 81. Exactly one runtime dependency still
-> imports it. The release of that dependency which fixes it needs SQLAlchemy 2.0,
-> which Superset does not support — so the ceiling stays, and now there is a
-> reason on file.
->
-> The half that matters is underneath. The evidence is *in the pull request* —
-> the commands, and what they printed — so a reviewer settles it in a minute
-> without redoing the investigation and without taking the agent's word for
-> anything. That is not this session being thorough. The playbook makes it
-> mandatory: the body carries what was run and what it printed."
-
-Then the dashboard. Scroll it; the top row is the least interesting part.
-
-> "Merge rate, not PR count. An unmerged PR is work the organisation declined.
-> Issue-to-PR separately from PR-to-merged, because the second one is human
-> review latency and summing them lets a slow reviewer make the agent look slow.
-> And ACUs are on there reading *not reported for this account* — the meter is
-> wired, this account does not return the figure, and 'not measured' and 'free'
-> are different claims.
->
-> Then the two sections underneath, which is where I'd actually look. **What
-> Devin claimed, next to what CI found** — including one it reported as
-> *blocked* that CI then passed, so the record says succeeded on the evidence
-> rather than on the report. And **what the system refused to do**: the intake
-> refusals, work never dispatched and never paid for, which is the number with
-> no row anywhere else.
->
-> And at the bottom, the merge it asked for and never got, with the session's
-> refusal quoted in full. Nothing there is paraphrased."
+Show: the fork's issue list.
 
 ---
 
-## 2:00 – 3:10 · How — the architectural decision
-<!-- Slide 5 to place the pieces, slide 7 for the principle, slide 11 for what
-     the system refuses to claim. Recording: `orchestrator.ts` instead of 5. -->
+## 0:45 – 2:15 · How — the demo
+<!-- Slide 4 is the spine: the timeline. Then slide 7 for the contract and slide
+     9 for the numbers. Presenting live, scroll the dashboard instead. -->
+
+Open the timeline — or, live, `npm run scenario`, which drives one issue through
+every path a step at a time.
+
+> "One of them, start to finish, this morning.
+>
+> **At 08:56 nobody knew this bug existed.** A session reads the repository and
+> files an issue: the Slack notifier claims it truncated a table, then sends the
+> whole thing — so the message is rejected and the notification fails.
+>
+> Intake accepts it at 09:05, and only because the issue carries a **contract**:
+> what to change, what not to touch, and the commands that constitute done. No
+> contract, no session. That gate has refused four hundred and thirty-four
+> issues here — including this one, twice, before it carried one.
+>
+> Pull request at 09:11. CI green at 09:13 — and that job is the point. It reads
+> the same contract off the same issue and runs the same commands again, on the
+> pull request. **One definition of done, checked by two parties, one of which
+> has no stake in the answer.**
+>
+> Merged at 09:35. Thirty-nine minutes from nobody-knew to shipped."
+
+Then the dashboard. Scroll past the top row.
+
+> "Merge rate, not PR count — an unmerged PR is work the org declined.
+> Issue-to-PR kept apart from PR-to-merged, because summing them lets a slow
+> reviewer make the agent look slow. ACUs read *not reported for this account* —
+> 'not measured' and 'free' are different claims.
+>
+> The two sections underneath are where I would actually look. **What Devin
+> claimed, next to what CI found.** And **what the system refused to do**. A
+> system that reports only what it did is not observable, it is advertising."
+
+---
+
+## 2:15 – 3:15 · How — the architectural decision
+<!-- Slide 6 to place the pieces, slide 8 for the principle, slide 12 for what
+     the system refuses to claim. Recording: `orchestrator.ts` instead of 6. -->
 
 Open `orchestrator.ts` at `settleOnIndependentVerification`.
 
-> "One decision runs through the whole codebase: **independent evidence outranks
-> what the agent says about its own work** — and it has to cut both ways, or it
-> is just a rule about which errors you prefer to keep.
+> "One decision runs through the codebase: **independent evidence outranks what
+> the agent says about its own work** — and it has to cut both ways, or it is
+> just a rule about which errors you prefer to keep.
 >
-> The easy direction is demoting a 'fixed' that does not build. The hard
-> direction is this one. QUAL-002 was recorded `failed` because Devin reported
-> it was blocked. It was right to. We fixed the contract, it pushed, CI went
-> green on the same pull request — and the record still said `failed`, on the
-> strength of a snapshot taken before any of that. So CI now promotes a stale
-> failure, narrowly: a PR must exist, and CI must have passed on it.
+> Demoting a 'fixed' that does not build is easy. This is the other direction:
+> QUAL-002 was recorded `failed` because Devin reported it blocked — correctly.
+> We fixed the contract, it pushed, CI went green on the same PR, and the record
+> still said `failed` on a snapshot taken before any of that. CI now promotes a
+> stale failure, narrowly.
 >
-> The same principle decides what the numbers mean. A cancelled remediation is
-> a decision, not a verdict — so it is out of the success-rate denominator, and
-> out of cycle time, because a duplicate stopped ten seconds after it was queued
-> is a very fast *nothing*."
-
-Optional, if the pacing allows — this one lands with engineers:
-
-> "And when the record disagreed with the issue labels, the labels were wrong
-> in the worst possible way: four of five issues read `failed` or `timed out`
-> while their PRs were merged. A dashboard saying 100% next to issues saying
-> 'failed' is worse than either being wrong alone. It makes the honest number
-> unbelievable too."
+> The same principle decides what this will not claim. **Autopilot asks for a
+> merge. It never records one.** The merge is read back from GitHub like any
+> other observer — so one that never happened shows up as a pull request still
+> open, and the issue goes to a human with the session quoted verbatim."
 
 ---
 
-## 3:10 – 4:20 · Why Devin
-<!-- Slides 9 and 10. Presenting, the quotes are on the slides — let them read.
+## 3:15 – 4:20 · Why Devin
+<!-- Slides 10 and 11. Presenting, the quotes are on the slides — let them read.
      Recording, open the issues themselves; the thread beats a quotation. -->
 
-This is the section that decides the pitch. Two artefacts, both real, both on
-screen.
+This is the section that decides the pitch. Three artefacts, all real, all on
+screen. Do not skip them: everything else in this demo could be built without an
+agent. These could not.
 
 **Open issue #5 (QUAL-002).**
 
-> "The contract told Devin to verify with `tsc --noEmit`. It got the other
-> checks passing, then stopped and reported that the type-check fails with 598
-> errors in *any* clean checkout — because the root tsconfig uses project
-> references whose outputs must be built first — and that fixing that was
-> outside the contract's scope.
+> "The contract said verify with `tsc --noEmit`. It got everything else green,
+> then stopped: the type-check fails with 598 errors in *any* clean checkout,
+> because the root tsconfig uses project references — and fixing that is outside
+> this contract's scope.
 >
-> That was correct. **A codemod would have failed silently. A worse agent would
-> have disabled the check to get green.** The fix was to amend the contract, in
-> the issue, which both Devin and CI read."
+> That was correct. **A codemod fails silently. A worse agent disables the check
+> to get green.** The fix was to amend the contract, which both Devin and CI read."
 
 **Open issue #3 (QUAL-001).**
 
-> "Second one, from this week. We added auto-merge: green CI, low-risk category,
-> Devin merges its own PR. We asked it to. It ran `gh pr merge` and came back
-> with: *my tooling blocks merging into master, that is my guardrail not
-> GitHub's, and auto-merge would hit the same rule so I will not try it as a
-> workaround.* Then it told us the two things that would permit a merge.
+> "We added auto-merge and asked it to merge its own PR. It came back with: *my
+> tooling blocks merging into master — that is my guardrail, not GitHub's, so
+> auto-merge hits the same rule and I will not try it as a workaround.* Then it
+> named the two things that would permit one.
 >
-> It refused, explained, distinguished its own policy from the platform's, and
-> declined the workaround. That is not a bot. And the system's response was to
-> label the issue `needs-human` and quote the refusal verbatim — because a
-> refusal that only exists in a session transcript is the same as no refusal.
+> It refused, explained, **told its own policy apart from the platform's**, and
+> declined the workaround."
+
+**Open PR #14 — the newest one, and the one I did not expect.**
+
+> "A *second* session reviews the pull request — one that never saw the change
+> being made, with only the diff and the contract. It reviewed it properly, and
+> opened with this: *submitting as a comment, because GitHub will not let this
+> account approve a pull request it opened.*
 >
-> **That is the case for an autonomous agent.** Not that it writes the patch —
-> plenty of things write patches. It is that when the task as specified is
-> wrong, it says so, and you can build a system that listens."
+> It hit a limit on its own authority, reported it accurately, and downgraded its
+> own verdict rather than dressing it up. **That is the case for an autonomous
+> agent.** Not that it writes the patch — plenty of things write patches. It is
+> that when it is not entitled to do what you asked, it says so, and you can
+> build a system that listens."
 
 ---
 
 ## 4:20 – 5:00 · When — next steps
-<!-- Slide 12 for the three, slide 13 to close on. -->
+<!-- Slide 13 for the three, slide 14 to close on. -->
 
-
-> "In a real engagement, three things next.
+> "Three things next.
 >
-> **Confidence as the merge gate, not category.** Today the tier is chosen by
-> label, which is a proxy for risk rather than a measure of it. Diff size, blast
-> radius, whether the change stayed inside the modules the contract named.
+> **Confidence as the merge gate, not category** — diff size, blast radius,
+> whether the change stayed inside the modules the contract named.
 >
-> **A reviewer who is not us.** The loop now closes with nobody in it — an
-> audit session files the issue, CI checks the fix, a second session reviews the
-> pull request. But an agent reviewing an agent is a *second opinion*, not
-> independent evidence: it comes from the same provider as the one that wrote
-> the code. Only CI is the latter, and closing that gap is the next real
-> problem, not another agent.
+> **A reviewer who is not us.** The loop closes with nobody in it today, but an
+> agent reviewing an agent is a second opinion — GitHub says so itself by
+> refusing the approval. That gap needs a different identity, not another agent.
 >
-> **Contracts from scanners.** Every issue here was hand-written and verified.
-> The intake does not care where an issue came from — Dependabot, CodeQL,
-> Sentry. That is where the volume is, and the volume is where this pays for
-> itself.
+> **Contracts from scanners.** Intake does not care where an issue came from —
+> Dependabot, CodeQL, Sentry. That is where the volume is.
 >
-> Repos and the full write-up are in the description. Thanks."
+> Repos and the write-up are in the description. Thanks."
 
 ---
 
 ## Notes
 
-- **Do not skip the two artefacts in the Why section.** Everything else in this
-  demo could be built without an agent. Those two could not.
+- **Do not skip the three artefacts in the Why section.** They are the only part
+  of this that a deterministic tool could not have produced.
 - If you overrun, cut the dashboard tour, not the pushback stories. The metrics
   are legible in a screenshot; the refusals need you to explain them.
-- Have `npm run report` ready as a fallback if the dashboard is slow to load —
-  same numbers, same source, works when the service is down.
-- Do not claim Devin merged anything. It did not, and the reason it did not is
-  one of the better moments in the demo.
-- Presenting rather than recording, the demo section is the one that changes:
-  slides 6 and 8 carry the contract and the numbers, but a live `npm run
-  simulate` is worth more than either. Run it if the room allows.
-- The pull request itself is worth the thirty seconds it costs. Everything up to
-  that point is the org's side of the contract; PR #8 is the only place the room
-  sees what came back — and it is the artefact, not the dashboard, that a
-  sceptical engineer will actually judge this on.
+- **Do not claim Devin merged into `master`.** It refused to, twice, and both
+  merges went to an integration branch after the base was retargeted — which is
+  the workaround Devin itself named when it declined.
+- Do not claim the reviewing agent approved anything on GitHub. It cannot. The
+  record says `agent`, and so should you.
+- The two agent-found issues are the strongest thing here and the easiest to
+  undersell. Say the timestamp out loud: at 08:56 nobody knew that bug existed.

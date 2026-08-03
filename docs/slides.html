@@ -17,7 +17,7 @@
          N        presenter notes
          P        print / save as PDF (one slide per page)
 
-  Thirteen slides, paced for five minutes. Presenter notes live in
+  Fourteen slides, paced for five minutes. Presenter notes live in
   <aside class="notes"> under each slide and are hidden until N.
 -->
 
@@ -246,6 +246,19 @@ table.metrics .fig { font-variant-numeric: tabular-nums; }
 table.shipped td:nth-child(2) { width: 15%; color: var(--muted); }
 table.shipped td:last-child { width: 11%; }
 
+.found {
+  display: inline-block;
+  font-size: 12.5px;
+  font-weight: 650;
+  letter-spacing: .03em;
+  color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+  border-radius: 3px;
+  padding: 1px 6px;
+  margin-left: 6px;
+  white-space: nowrap;
+}
+
 .outcome {
   display: inline-block;
   font-size: 14px;
@@ -257,6 +270,14 @@ table.shipped td:last-child { width: 11%; }
   border-radius: 3px;
   padding: 3px 9px;
 }
+
+/* --- the end-to-end timeline: time, event, and why it is worth a row ------- */
+.tl { display: grid; grid-template-columns: auto auto 1fr; gap: 7px 20px; align-items: baseline; }
+.tl .t { font-family: var(--mono); font-size: 17px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.tl .e { font-size: 19px; font-weight: 650; white-space: nowrap; }
+.tl .w { font-size: 17px; color: var(--muted); line-height: 1.35; }
+.tl .row-agent .e { color: var(--warn); }
+.tl .row-key .e { color: var(--accent); }
 
 .tally {
   font-size: 21px;
@@ -494,7 +515,10 @@ body.notes-on #notes-panel { display: block; }
         <strong>GitHub issues in, Devin sessions out.</strong>
         Pull requests and metrics, observable end to end.
       </p>
-      <p class="small">Apache Superset fork · 5 issues · 5 pull requests · all merged</p>
+      <p class="small">
+        Apache Superset fork · 7 issues · 7 pull requests · all merged ·
+        <strong>two of them found by the agent itself</strong>
+      </p>
       <aside class="notes">Do not read the slide. Open on the problem, not the product.</aside>
     </section>
 
@@ -546,13 +570,28 @@ body.notes-on #notes-panel { display: block; }
             <td>QUAL-002 <code>@ts-ignore</code> → <code>@ts-expect-error</code></td>
             <td>code-quality</td><td><span class="outcome">merged</span></td>
           </tr>
+          <tr>
+            <td>
+              REL-001 Slack truncation tabulates the full frame, not the truncated one
+              <span class="found">agent-found</span>
+            </td>
+            <td>reliability</td><td><span class="outcome">merged</span></td>
+          </tr>
+          <tr>
+            <td>
+              REL-002 histogram Normalize divides by the wrong denominator
+              <span class="found">agent-found</span>
+            </td>
+            <td>reliability</td><td><span class="outcome">merged</span></td>
+          </tr>
         </tbody>
       </table>
-      <div class="tally">5 of 5 merged · 100% merge rate · 2 self-corrections after CI failures, no human</div>
+      <div class="tally">7 of 7 merged · 100% merge rate · 2 self-corrections after CI failures, no human</div>
       <p class="small">
-        Deliberate mix: two security fixes, two code changes, and one
-        investigation whose deliverable is a written audit — “produce evidence”
-        is real work an agent is good at.
+        The first five were written by hand. The last two were <strong>found and
+        filed by Devin</strong>, on a schedule, and went through exactly the same
+        gates — including the one that refuses an issue with no contract, which
+        refused those twice before they carried one.
       </p>
       <aside class="notes">
         Do not spend the beat on DEP-001 here — the next slide is that pull
@@ -561,6 +600,53 @@ body.notes-on #notes-panel { display: block; }
     </section>
 
     <!-- 4 ------------------------------------------------------------------ -->
+    <section class="slide" data-header="The loop, end to end">
+      <h2 class="wide">Nobody had noticed this bug at 08:56</h2>
+      <div class="tl">
+        <span class="t">08:56</span><span class="e">audit dispatched</span>
+        <span class="w">Autopilot asks a session to go and find something worth fixing</span>
+
+        <span class="t">08:57</span><span class="e">issue filed</span>
+        <span class="w">a real defect in Slack report truncation, with a contract block</span>
+
+        <span class="t">09:05</span><span class="e">intake accepted it</span>
+        <span class="w">contract valid, not already in flight, not already fixed</span>
+
+        <span class="t">09:11</span><span class="e">pull request opened</span>
+        <span class="w">#12, from <code>autopilot/rel-001-issue-11</code></span>
+
+        <span class="t">09:13</span><span class="e">CI passed</span>
+        <span class="w">the issue&rsquo;s own <code>verify</code> commands, re-run by something with no stake</span>
+
+        <span class="t">09:13</span><span class="e">reviewer dispatched</span>
+        <span class="w">a second session, with the diff and the contract and nothing else</span>
+
+        <span class="t">09:20</span><span class="e">agent verdict: approved</span>
+        <span class="w">recorded as the agent&rsquo;s own report &mdash; not as an approval</span>
+
+        <span class="t">09:28</span><span class="e">a human approved</span>
+        <span class="w">picked up by polling in 73s, with the webhook tunnel dead</span>
+
+        <span class="t">09:35</span><span class="e">merge requested</span>
+        <span class="w">Autopilot asks. It never records a merge</span>
+
+        <span class="t">09:35</span><span class="e">merged</span>
+        <span class="w">read back from GitHub 16 seconds later, like any other observer</span>
+      </div>
+      <div class="spacer"></div>
+      <p class="small">
+        39 minutes, agent-found to merged. The one human action &mdash; the approval &mdash;
+        was <strong>not required</strong>: the second of these, REL-002, merged on the
+        reviewing agent&rsquo;s verdict alone.
+      </p>
+      <aside class="notes">
+        Do not read the rows. Two beats only: the top row is the part that used
+        to be a person&rsquo;s job, and 09:13 and 09:28 are two different kinds of
+        approval that the system refuses to call the same thing.
+      </aside>
+    </section>
+
+    <!-- 5 ------------------------------------------------------------------ -->
     <section class="slide" data-header="What Devin wrote">
       <h2 class="wide">Anatomy of a pull request — DEP-001</h2>
       <p class="pr-meta">
@@ -623,32 +709,35 @@ $ python -c "import sqlalchemy_redshift"
       </aside>
     </section>
 
-    <!-- 5 ------------------------------------------------------------------ -->
+    <!-- 6 ------------------------------------------------------------------ -->
     <section class="slide diagram-slide" data-header="Architecture">
       <h2 class="wide">Architecture</h2>
-<pre class="diagram">  TRIGGERS                  ORCHESTRATOR                  EXTERNAL
+<pre class="diagram">  TRIGGERS                  ORCHESTRATOR                 EXTERNAL
 
-  GitHub webhook  ──┐
-  issues.labeled    │      ┌────────────┐   contract valid? already running?
-                    ├─────►│  intake()  │   already fixed and awaiting review?
-  Scheduled scan  ──┤      └─────┬──────┘
-  every 60s         │            │ queued
-                    │            ▼
-  POST /api/trigger ┤      ┌────────────┐   POST …/sessions
-                    │      │ dispatch() │ ──────────────────────►  Devin
-  Devin files its ──┘      └─────┬──────┘   prompt + playbook      v1 or v3
-  own issues                     │ running  + JSON schema             │
-                                 ▼                                    │
-                          ┌────────────┐    GET …/sessions/{id}       │
-                          │reconcile() │ ◄────────────────────────────┘
-                          └─────┬──────┘    every 15s, normalised
-                                │
-                  succeeded / failed / blocked  ──► PR · comment · labels
-                                │
+  POST /api/audit ──┐      ┌────────────┐  "find something worth fixing"
+  or a schedule     ├─────►│  audit()   │ ─────────────────────►  Devin
+                    │      └────────────┘  files issues + contracts
+  GitHub webhook  ──┤      ┌────────────┐  contract valid? already running?
+  issues.labeled    ├─────►│  intake()  │  already fixed and awaiting review?
+  Scheduled scan  ──┘      └─────┬──────┘  434 refused, never dispatched
+  every 60s                      │ queued
+                                 ▼
+                          ┌────────────┐  POST …/sessions
+                          │ dispatch() │ ─────────────────────►  Devin
+                          └─────┬──────┘  prompt + playbook         │
+                                ▼         GET …/sessions/{id}       │
+                          ┌────────────┐ ◄──────────────────────────┘
+                          │reconcile() │  every 15s, normalised
+                          └─────┬──────┘
+      PR opened ──► CI ────────►│ green
                                 ▼
-              SQLite: remediations + append-only event log
-                                │
-                dashboard  ·  /metrics  ·  npm run report</pre>
+                          ┌────────────┐  a SECOND session — diff and
+                          │  review()  │ ─────────────────────►  contract only
+   pull_request_review ──►└─────┬──────┘  verdict via `gh pr review`
+   (or polled, when the         │
+    webhook never comes)        ▼
+      approved ──► ask Devin to merge ──► read the merge back from GitHub
+      changes  ──► same session, same branch, capped</pre>
       <aside class="notes">
         One point only: intake and dispatch are separate because webhooks arrive
         in bursts and every session costs money. The queue absorbs the burst,
@@ -656,7 +745,7 @@ $ python -c "import sqlalchemy_redshift"
       </aside>
     </section>
 
-    <!-- 6 ------------------------------------------------------------------ -->
+    <!-- 7 ------------------------------------------------------------------ -->
     <section class="slide" data-header="Verification">
       <h2 class="wide">One definition of done, checked by two parties</h2>
       <p class="wide">Every issue carries a machine-readable <strong>contract</strong>:</p>
@@ -678,7 +767,7 @@ verify:
       </aside>
     </section>
 
-    <!-- 7 ------------------------------------------------------------------ -->
+    <!-- 8 ------------------------------------------------------------------ -->
     <section class="slide" data-header="The principle">
       <h2 class="wide">The principle</h2>
       <div class="big center">
@@ -711,19 +800,19 @@ verify:
       </aside>
     </section>
 
-    <!-- 8 ------------------------------------------------------------------ -->
+    <!-- 9 ------------------------------------------------------------------ -->
     <section class="slide" data-header="Measurement">
       <h2 class="wide">If I were an engineering leader, how would I know this is working?</h2>
       <table class="metrics">
         <tbody>
           <tr>
             <td>Merge rate</td>
-            <td class="fig">100% (5 of 5)</td>
+            <td class="fig">100% (7 of 7)</td>
             <td>an unmerged PR is work the org declined</td>
           </tr>
           <tr>
             <td>Success rate</td>
-            <td class="fig">100% of 5 concluded</td>
+            <td class="fig">100% of 7 concluded</td>
             <td>12 withdrawn are excluded — a cancellation is a decision, not a verdict</td>
           </tr>
           <tr>
@@ -733,17 +822,17 @@ verify:
           </tr>
           <tr>
             <td>PR → merged</td>
-            <td class="fig">median 67.7m</td>
-            <td><em>human</em> review latency, reported separately</td>
+            <td class="fig">median 46.8m</td>
+            <td><em>review</em> latency — human or agent, reported separately from the agent's</td>
           </tr>
           <tr>
             <td>CI verdicts</td>
-            <td class="fig">5 passed, 2 self-corrections</td>
+            <td class="fig">7 passed, 2 self-corrections</td>
             <td>how often the independent check rejected the work, and how often it was fixed with no human</td>
           </tr>
           <tr>
             <td>Refused at intake</td>
-            <td class="fig">386</td>
+            <td class="fig">434</td>
             <td>already in flight, already fixed, already merged — never dispatched, never paid for</td>
           </tr>
           <tr>
@@ -763,7 +852,7 @@ verify:
       </aside>
     </section>
 
-    <!-- 9 ------------------------------------------------------------------ -->
+    <!-- 10 ----------------------------------------------------------------- -->
     <section class="slide" data-header="Why Devin · 1 of 2">
       <h2 class="wide">Why Devin — 1. It argues back, and it is right</h2>
       <p class="wide">
@@ -791,7 +880,7 @@ verify:
       </aside>
     </section>
 
-    <!-- 10 ----------------------------------------------------------------- -->
+    <!-- 11 ----------------------------------------------------------------- -->
     <section class="slide tight" data-header="Why Devin · 2 of 2">
       <h2 class="wide">Why Devin — 2. It refuses, and explains</h2>
       <p class="wide">
@@ -825,7 +914,7 @@ verify:
       </aside>
     </section>
 
-    <!-- 11 ----------------------------------------------------------------- -->
+    <!-- 12 ----------------------------------------------------------------- -->
     <section class="slide" data-header="Credibility">
       <h2 class="wide">What the system refuses to claim</h2>
       <div class="big center">Autopilot asks for a merge. It never records one.</div>
@@ -833,7 +922,8 @@ verify:
         <li>Nothing on that path writes <code>pr_state</code> — the merge is read back from GitHub, like any other observer</li>
         <li>A merge that never happened shows up as a pull request <strong>still open</strong>, not a shipped fix</li>
         <li>After a grace period it labels the issue <code>autopilot:needs-human</code> and <strong>quotes the session verbatim</strong> — no keyword-matching the refusal, because that would be the system inventing a reason</li>
-        <li>The dashboard counts the refusals rather than only the wins: <strong>386</strong> issues declined at intake, <strong>1</strong> merge asked for and never observed, and the session's own words underneath</li>
+        <li>The dashboard counts the refusals rather than only the wins: <strong>434</strong> issues declined at intake, <strong>2</strong> merges asked for and never observed, and the session's own words underneath</li>
+        <li>An agent's approval is counted as <strong>an agent's approval</strong> — GitHub refuses to let it approve at all, and the record says which kind it was</li>
       </ul>
       <div class="spacer"></div>
       <p class="small">An escalation nobody is told about is the same as a failure nobody sees.</p>
@@ -843,7 +933,7 @@ verify:
       </aside>
     </section>
 
-    <!-- 12 ----------------------------------------------------------------- -->
+    <!-- 13 ----------------------------------------------------------------- -->
     <section class="slide" data-header="Next">
       <h2 class="wide">Next, in a real engagement</h2>
       <div class="next-item">
@@ -873,12 +963,13 @@ verify:
       </div>
     </section>
 
-    <!-- 13 ----------------------------------------------------------------- -->
+    <!-- 14 ----------------------------------------------------------------- -->
     <section class="slide" data-header="Run it yourself">
       <h2 class="wide">Run it yourself</h2>
 <pre>git clone https://github.com/watilde/Autopilot.git &amp;&amp; cd Autopilot
 docker compose up --build -d
-npm install &amp;&amp; npm run simulate      # five signed webhooks, end to end
+npm install &amp;&amp; npm run scenario      # one issue through every path, a step at a time
+npm run simulate                      # or five at once, for throughput
 open http://localhost:8080</pre>
       <p class="wide">
         Defaults to <code>DEVIN_MODE=mock</code> — the whole pipeline, no API
@@ -886,12 +977,13 @@ open http://localhost:8080</pre>
       </p>
       <div class="links">
         <span class="label">Solution</span> github.com/watilde/Autopilot<br>
-        <span class="label">Fork</span> github.com/watilde/superset · issues #1–#5, pull requests #6–#10
+        <span class="label">Fork</span> github.com/watilde/superset · 7 issues, 7 merged pull requests
       </div>
       <div class="spacer"></div>
       <p class="small">
-        158 tests, no network. Most of the auto-merge tests are cases that must
-        <em>not</em> merge.
+        201 tests, no network. Most of the auto-merge tests are cases that must
+        <em>not</em> merge, and most of the review tests are things the reviewing
+        agent is not allowed to do.
       </p>
       <aside class="notes">
         Close on the mock mode. Anyone in the room can run the whole thing in
