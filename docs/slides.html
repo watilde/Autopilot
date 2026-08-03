@@ -700,6 +700,11 @@ verify:
           on a snapshot taken before any of that.
         </p>
       </blockquote>
+      <p class="small">
+        On the dashboard this has its own line — <strong>promoted over the
+        report: 1</strong>. A correction the system makes against its own agent
+        is the one nobody takes on trust.
+      </p>
       <aside class="notes">
         Narrow by design: a pull request must exist, and CI must have passed on
         it. Nothing promotes a remediation that produced no code.
@@ -735,6 +740,11 @@ verify:
             <td>CI verdicts</td>
             <td class="fig">5 passed, 2 self-corrections</td>
             <td>how often the independent check rejected the work, and how often it was fixed with no human</td>
+          </tr>
+          <tr>
+            <td>Refused at intake</td>
+            <td class="fig">386</td>
+            <td>already in flight, already fixed, already merged — never dispatched, never paid for</td>
           </tr>
           <tr>
             <td>ACUs</td>
@@ -823,6 +833,7 @@ verify:
         <li>Nothing on that path writes <code>pr_state</code> — the merge is read back from GitHub, like any other observer</li>
         <li>A merge that never happened shows up as a pull request <strong>still open</strong>, not a shipped fix</li>
         <li>After a grace period it labels the issue <code>autopilot:needs-human</code> and <strong>quotes the session verbatim</strong> — no keyword-matching the refusal, because that would be the system inventing a reason</li>
+        <li>The dashboard counts the refusals rather than only the wins: <strong>386</strong> issues declined at intake, <strong>1</strong> merge asked for and never observed, and the session's own words underneath</li>
       </ul>
       <div class="spacer"></div>
       <p class="small">An escalation nobody is told about is the same as a failure nobody sees.</p>

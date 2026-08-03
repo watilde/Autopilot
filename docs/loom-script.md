@@ -29,7 +29,11 @@ the words are here.
 
 **Before recording**, have these open in tabs:
 
-1. `http://localhost:8080` — dashboard, seeded (`npm run simulate`)
+1. `http://localhost:8080` — the dashboard, **scrolled past the KPI row** so the
+   verification and refusal sections are what lands. Check it is reading the
+   real record before you start: an empty database renders every local figure as
+   a dash while the "as reported by Devin" panel fills in, which looks broken
+   rather than empty. Seed with `npm run simulate` for the mock walkthrough.
 2. https://github.com/watilde/superset/issues — the five issues, all
    `autopilot:succeeded`
 3. https://github.com/watilde/superset/pull/8 — DEP-001, the audit Devin wrote
