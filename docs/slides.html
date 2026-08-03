@@ -1,0 +1,973 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Autopilot — remediation control plane</title>
+
+<!--
+  Autopilot — the walkthrough deck.
+
+  Self-contained on purpose: no CDN, no build step, no network. Open the file
+  and present. The narrative long-form is docs/loom-script.md; this deck is the
+  same argument with the prose removed.
+
+  Keys   ← → · Space · PageUp/PageDown · Home/End   move
+         F        fullscreen
+         N        presenter notes
+         P        print / save as PDF (one slide per page)
+
+  Thirteen slides, paced for five minutes. Presenter notes live in
+  <aside class="notes"> under each slide and are hidden until N.
+-->
+
+<style>
+/* ---------------------------------------------------------------------------
+   Palette. One accent, held to structural marks — rules, the progress bar,
+   the things a projector has to render honestly. Committed to a light theme:
+   a deck is shown in a room, not in a browser at midnight.
+   --------------------------------------------------------------------------- */
+:root {
+  --bg:      #faf9f7;
+  --stage:   #ffffff;
+  --ink:     #14181f;
+  --muted:   #5c6472;
+  --faint:   #8a93a1;
+  --rule:    #e4e1db;
+  --accent:  #0d6b6b;
+  --accent-soft: #e6f0ef;
+  --warn:    #9a5b12;
+  --code-bg: #f5f4f1;
+
+  --stage-w: 1280px;
+  --stage-h: 720px;
+
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+          "Helvetica Neue", "Hiragino Sans", "Noto Sans JP", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+          "Liberation Mono", monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* ---------------------------------------------------------------------------
+   The stage is a fixed 1280×720 box scaled to fit the viewport, so every
+   slide has the same geometry whatever it is shown on — a laptop, a projector,
+   a PDF. Layout is never a function of the window.
+   --------------------------------------------------------------------------- */
+#viewport {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
+
+#stage {
+  position: relative;
+  width: var(--stage-w);
+  height: var(--stage-h);
+  background: var(--stage);
+  box-shadow: 0 1px 2px rgba(20, 24, 31, .06), 0 12px 40px rgba(20, 24, 31, .10);
+  transform-origin: center center;
+  overflow: hidden;
+}
+
+.slide {
+  position: absolute;
+  inset: 0;
+  display: none;
+  flex-direction: column;
+  padding: 64px 72px 60px;
+}
+.slide.current { display: flex; }
+
+/* Running header, suppressed on the title slide. */
+.slide::before {
+  content: attr(data-header);
+  position: absolute;
+  top: 26px;
+  left: 72px;
+  right: 72px;
+  font-size: 13px;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.slide.title::before { content: none; }
+
+/* --- type ---------------------------------------------------------------- */
+h1 {
+  font-size: 68px;
+  line-height: 1.05;
+  letter-spacing: -.025em;
+  margin: 0 0 24px;
+  font-weight: 700;
+}
+h2 {
+  font-size: 38px;
+  line-height: 1.18;
+  letter-spacing: -.018em;
+  margin: 0 0 30px;
+  font-weight: 650;
+  max-width: 20ch;
+}
+h2.wide { max-width: none; }
+
+p { font-size: 25px; line-height: 1.5; margin: 0 0 20px; max-width: 46ch; }
+p.wide { max-width: none; }
+
+strong { font-weight: 650; }
+em { font-style: italic; }
+
+ul { margin: 0 0 20px; padding-left: 0; list-style: none; }
+li {
+  font-size: 24px;
+  line-height: 1.45;
+  margin-bottom: 14px;
+  padding-left: 28px;
+  position: relative;
+  max-width: 58ch;
+}
+li::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: .62em;
+  width: 8px;
+  height: 2px;
+  background: var(--accent);
+}
+
+.small { font-size: 18px; line-height: 1.45; color: var(--muted); max-width: 74ch; }
+.small strong { color: var(--ink); }
+
+/* The one-line arguments the deck is built around. */
+.big {
+  font-size: 40px;
+  font-weight: 650;
+  line-height: 1.32;
+  letter-spacing: -.018em;
+  margin: 6px 0 22px;
+  max-width: 26ch;
+}
+.big.center { max-width: none; }
+
+.spacer { flex: 1 1 auto; min-height: 0; }
+
+/* --- title slide --------------------------------------------------------- */
+.slide.title { justify-content: center; padding: 72px 88px; }
+.slide.title .lede { font-size: 30px; line-height: 1.45; margin: 0 0 30px; max-width: 30ch; }
+.slide.title .lede strong { display: block; font-size: 34px; margin-bottom: 6px; }
+.rule-accent {
+  width: 84px;
+  height: 4px;
+  background: var(--accent);
+  margin: 0 0 34px;
+}
+
+/* --- code ---------------------------------------------------------------- */
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 18px 22px;
+  margin: 0 0 20px;
+  font-family: var(--mono);
+  font-size: 17px;
+  line-height: 1.5;
+  overflow: hidden;
+  white-space: pre;
+}
+/* 23 lines tall. Sized to clear the stage floor rather than to be readable at
+   arm's length — this one is projected and talked over, not read. */
+pre.diagram {
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin-bottom: 0;
+  font-size: 15px;
+  line-height: 1.3;
+  color: #2b3240;
+}
+.slide.diagram-slide h2 { margin-bottom: 18px; }
+code {
+  font-family: var(--mono);
+  font-size: .87em;
+  background: var(--code-bg);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: .06em .34em;
+}
+pre code { background: none; border: none; padding: 0; font-size: inherit; }
+
+/* --- tables -------------------------------------------------------------- */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 18px;
+  font-size: 19px;
+}
+th, td {
+  text-align: left;
+  padding: 11px 14px 11px 0;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+  line-height: 1.38;
+}
+thead th {
+  font-size: 13px;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: var(--faint);
+  font-weight: 600;
+  border-bottom-color: #cfcbc3;
+  padding-bottom: 8px;
+}
+tbody tr:last-child td { border-bottom: none; }
+td code { font-size: .82em; }
+
+/* Metrics table: label · figure · why it is the honest number. */
+table.metrics td:first-child { width: 20%; font-weight: 650; white-space: nowrap; }
+table.metrics td:nth-child(2) { width: 26%; }
+table.metrics td:nth-child(3) { color: var(--muted); font-size: 17.5px; }
+table.metrics .fig { font-variant-numeric: tabular-nums; }
+
+table.shipped td:nth-child(2) { width: 15%; color: var(--muted); }
+table.shipped td:last-child { width: 11%; }
+
+.outcome {
+  display: inline-block;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 3px;
+  padding: 3px 9px;
+}
+
+.tally {
+  font-size: 21px;
+  font-weight: 650;
+  margin: 4px 0 14px;
+}
+
+/* ---------------------------------------------------------------------------
+   Pull-request slide. Two panels, because the argument is two-part: what the
+   agent concluded, and how the reviewer checks it without taking its word.
+   Quoted off the real pull request, so the panels are shaped like the sections
+   of a PR body rather than like slide furniture.
+   --------------------------------------------------------------------------- */
+.pr-meta {
+  font-size: 18px;
+  color: var(--muted);
+  margin: -16px 0 20px;
+  max-width: none;
+  font-variant-numeric: tabular-nums;
+}
+.pr-meta strong { color: var(--ink); }
+.pr-meta code { font-size: .84em; }
+
+.pr-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 40px;
+  align-items: start;
+}
+
+.pr-block {
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.pr-block .bar {
+  font-size: 12px;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--faint);
+  font-weight: 600;
+  background: var(--code-bg);
+  border-bottom: 1px solid var(--rule);
+  padding: 7px 16px;
+}
+.pr-body { padding: 14px 16px 16px; }
+.pr-body p { font-size: 17px; line-height: 1.42; margin: 0 0 10px; max-width: none; }
+.pr-body ul { margin: 0; }
+.pr-body li { font-size: 17px; line-height: 1.42; margin-bottom: 9px; padding-left: 20px; max-width: none; }
+.pr-body li:last-child { margin-bottom: 0; }
+.pr-body li::before { left: 2px; top: .6em; width: 6px; }
+/* A package name split across two boxed halves reads as two packages. */
+.pr-body code { white-space: nowrap; }
+.pr-body pre {
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.52;
+}
+/* Command output, not commands — the distinction is the whole panel. */
+.pr-body pre .out  { color: var(--muted); }
+.pr-body pre .fail { color: var(--warn); }
+
+/* --- quotes -------------------------------------------------------------- */
+blockquote {
+  margin: 0 0 20px;
+  padding: 2px 0 2px 24px;
+  border-left: 3px solid var(--accent);
+  color: #2b3240;
+}
+blockquote p {
+  font-size: 21px;
+  line-height: 1.48;
+  margin: 0 0 10px;
+  max-width: 62ch;
+}
+blockquote p:last-child { margin-bottom: 0; }
+
+.attrib { font-size: 17px; color: var(--muted); margin: -8px 0 20px; }
+
+/* Slide 9's verdict line — four claims, one row. */
+.claims {
+  font-size: 19px;
+  color: var(--muted);
+  margin: 0 0 18px;
+}
+.claims strong { color: var(--ink); font-weight: 650; }
+
+/* Slide 9 carries a quote, a verdict line and a callout. It fits, but only
+   with the paragraph rhythm pulled in. */
+.slide.tight p { margin-bottom: 14px; }
+.slide.tight blockquote { margin-bottom: 16px; }
+.slide.tight .big { margin: 2px 0 16px; }
+
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 44px;
+}
+.next-item { margin-bottom: 22px; }
+.next-item h3 {
+  font-size: 23px;
+  line-height: 1.3;
+  margin: 0 0 8px;
+  font-weight: 650;
+}
+.next-item p { font-size: 19px; line-height: 1.45; margin: 0; color: var(--muted); max-width: none; }
+
+.links { font-size: 20px; line-height: 1.6; }
+.links .label {
+  display: inline-block;
+  min-width: 92px;
+  font-weight: 650;
+}
+.links a, a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-soft); }
+
+/* ---------------------------------------------------------------------------
+   Chrome: progress, counter, notes. All of it disappears in print.
+   --------------------------------------------------------------------------- */
+#progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 3px;
+  background: var(--accent);
+  width: 0;
+  transition: width .18s ease-out;
+  z-index: 10;
+}
+
+#counter {
+  position: fixed;
+  right: 16px;
+  bottom: 12px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+  z-index: 10;
+  user-select: none;
+}
+
+#help {
+  position: fixed;
+  left: 16px;
+  bottom: 12px;
+  font-size: 13px;
+  color: var(--faint);
+  z-index: 10;
+  user-select: none;
+}
+#help kbd {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  border: 1px solid var(--rule);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  padding: 1px 5px;
+  background: #fff;
+  color: var(--muted);
+}
+
+/* Presenter notes: off by default, so the deck opens as a deck. */
+.notes { display: none; }
+body.notes-on #notes-panel { display: block; }
+#notes-panel {
+  display: none;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-height: 30vh;
+  overflow-y: auto;
+  background: #14181f;
+  color: #d7dbe2;
+  padding: 16px 22px 18px;
+  font-size: 15px;
+  line-height: 1.5;
+  z-index: 20;
+  box-shadow: 0 -6px 24px rgba(20, 24, 31, .28);
+}
+#notes-panel .tag {
+  font-size: 11px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: #7f8b9c;
+  display: block;
+  margin-bottom: 6px;
+}
+#notes-panel em { color: #fff; font-style: italic; }
+
+/* ---------------------------------------------------------------------------
+   Print. Every slide on its own landscape page at true size — the PDF is a
+   deliverable, not a screenshot of this one.
+   --------------------------------------------------------------------------- */
+@page { size: 338.7mm 190.5mm; margin: 0; }
+
+@media print {
+  html, body { overflow: visible; height: auto; background: #fff; }
+  #viewport { position: static; display: block; }
+  #stage {
+    width: var(--stage-w);
+    height: auto;
+    box-shadow: none;
+    transform: none !important;
+  }
+  .slide {
+    display: flex !important;
+    position: relative;
+    inset: auto;
+    width: var(--stage-w);
+    height: var(--stage-h);
+    page-break-after: always;
+    break-after: page;
+  }
+  .slide:last-child { page-break-after: auto; break-after: auto; }
+  #progress, #counter, #help, #notes-panel { display: none !important; }
+}
+</style>
+</head>
+<body>
+
+<div id="progress"></div>
+
+<div id="viewport">
+  <div id="stage">
+
+    <!-- 1 ------------------------------------------------------------------ -->
+    <section class="slide title">
+      <h1>Autopilot</h1>
+      <div class="rule-accent"></div>
+      <p class="lede">
+        <strong>GitHub issues in, Devin sessions out.</strong>
+        Pull requests and metrics, observable end to end.
+      </p>
+      <p class="small">Apache Superset fork · 5 issues · 5 pull requests · all merged</p>
+      <aside class="notes">Do not read the slide. Open on the problem, not the product.</aside>
+    </section>
+
+    <!-- 2 ------------------------------------------------------------------ -->
+    <section class="slide" data-header="The problem">
+      <h2>The backlog nobody gets to</h2>
+      <p class="wide">
+        Known vulnerabilities. A dependency pin nobody can justify anymore.
+        The same weak pattern inlined across three modules.
+      </p>
+      <p class="wide">
+        Not hard. Each one costs a <strong>context switch</strong>, and that is
+        the expensive part.
+      </p>
+      <p class="wide">So point an agent at it — and you inherit a different problem:</p>
+      <div class="spacer"></div>
+      <div class="big">The agent says it fixed it.<br><strong>How do you know?</strong></div>
+      <aside class="notes">
+        This is the whole pitch. Everything after this slide is an answer to
+        that question. Say it slowly.
+      </aside>
+    </section>
+
+    <!-- 3 ------------------------------------------------------------------ -->
+    <section class="slide" data-header="Results">
+      <h2 class="wide">What shipped</h2>
+      <table class="shipped">
+        <thead>
+          <tr><th>Issue</th><th>Category</th><th>Outcome</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>SEC-001 <code>yaml.load</code> → <code>safe_load</code> (CWE-502)</td>
+            <td>security</td><td><span class="outcome">merged</span></td>
+          </tr>
+          <tr>
+            <td>SEC-002 <code>hashlib.md5(usedforsecurity=False)</code> — crashes on FIPS hosts</td>
+            <td>security</td><td><span class="outcome">merged</span></td>
+          </tr>
+          <tr>
+            <td>QUAL-001 collision-prone <code>Math.random()</code> ids in 3 modules</td>
+            <td>code-quality</td><td><span class="outcome">merged</span></td>
+          </tr>
+          <tr>
+            <td>DEP-001 audit the <code>setuptools&lt;81</code> ceiling</td>
+            <td>dependency</td><td><span class="outcome">merged</span></td>
+          </tr>
+          <tr>
+            <td>QUAL-002 <code>@ts-ignore</code> → <code>@ts-expect-error</code></td>
+            <td>code-quality</td><td><span class="outcome">merged</span></td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="tally">5 of 5 merged · 100% merge rate · 2 self-corrections after CI failures, no human</div>
+      <p class="small">
+        Deliberate mix: two security fixes, two code changes, and one
+        investigation whose deliverable is a written audit — “produce evidence”
+        is real work an agent is good at.
+      </p>
+      <aside class="notes">
+        Do not spend the beat on DEP-001 here — the next slide is that pull
+        request. Land the mix instead: two security, two code, one investigation.
+      </aside>
+    </section>
+
+    <!-- 4 ------------------------------------------------------------------ -->
+    <section class="slide" data-header="What Devin wrote">
+      <h2 class="wide">Anatomy of a pull request — DEP-001</h2>
+      <p class="pr-meta">
+        <strong>#8</strong> · +173 −0 ·
+        <code>docs/dependency-audit-setuptools.md</code> · branch
+        <code>autopilot/dep-001-issue-4</code>
+      </p>
+      <div class="pr-cols">
+        <div class="pr-block">
+          <div class="bar">Summary</div>
+          <div class="pr-body">
+            <p>
+              The pin's own comment blames “Preset's <code>clients</code>
+              package” — which does not appear anywhere in this dependency tree.
+            </p>
+            <ul>
+              <li>
+                <code>pkg_resources</code> still ships in setuptools 81 and is
+                removed in 82 — the cliff is <code>&lt;82</code>, not
+                <code>&lt;81</code>
+              </li>
+              <li>
+                One runtime dependency imports it unconditionally:
+                <code>sqlalchemy-redshift</code>. Its fixed release requires
+                SQLAlchemy 2.0, which Superset does not pin to
+              </li>
+              <li>
+                <strong>Recommendation: keep the ceiling.</strong> It cannot be
+                lifted until Superset supports SQLAlchemy 2.0
+              </li>
+            </ul>
+          </div>
+        </div>
+        <div class="pr-block">
+          <div class="bar">Testing instructions</div>
+          <div class="pr-body">
+<pre>$ uv pip install sqlalchemy-redshift==0.8.14 \
+                 setuptools==81.0.0
+$ python -c "import sqlalchemy_redshift"
+<span class="out">UserWarning: pkg_resources is deprecated</span>
+
+$ uv pip install setuptools==82.0.0
+$ python -c "import sqlalchemy_redshift"
+<span class="fail">ModuleNotFoundError: No module named
+'pkg_resources'</span></pre>
+          </div>
+        </div>
+      </div>
+      <div class="spacer"></div>
+      <p class="small">
+        The deliverable was a <strong>recommendation, not a diff</strong> — and
+        every claim in it is a command a reviewer can rerun. All five pull
+        requests are written this way: the playbook requires the body to carry
+        what was run and what it printed.
+      </p>
+      <aside class="notes">
+        Do not read the panels. One sentence: the pin's stated reason was wrong,
+        nobody had ever checked, and checking <em>was</em> the deliverable. If
+        asked why this one — it is the pull request a codemod has no answer for.
+      </aside>
+    </section>
+
+    <!-- 5 ------------------------------------------------------------------ -->
+    <section class="slide diagram-slide" data-header="Architecture">
+      <h2 class="wide">Architecture</h2>
+<pre class="diagram">  TRIGGERS                  ORCHESTRATOR                  EXTERNAL
+
+  GitHub webhook  ──┐
+  issues.labeled    │      ┌────────────┐   contract valid? already running?
+                    ├─────►│  intake()  │   already fixed and awaiting review?
+  Scheduled scan  ──┤      └─────┬──────┘
+  every 60s         │            │ queued
+                    │            ▼
+  POST /api/trigger ┤      ┌────────────┐   POST …/sessions
+                    │      │ dispatch() │ ──────────────────────►  Devin
+  Devin files its ──┘      └─────┬──────┘   prompt + playbook      v1 or v3
+  own issues                     │ running  + JSON schema             │
+                                 ▼                                    │
+                          ┌────────────┐    GET …/sessions/{id}       │
+                          │reconcile() │ ◄────────────────────────────┘
+                          └─────┬──────┘    every 15s, normalised
+                                │
+                  succeeded / failed / blocked  ──► PR · comment · labels
+                                │
+                                ▼
+              SQLite: remediations + append-only event log
+                                │
+                dashboard  ·  /metrics  ·  npm run report</pre>
+      <aside class="notes">
+        One point only: intake and dispatch are separate because webhooks arrive
+        in bursts and every session costs money. The queue absorbs the burst,
+        the cap controls spend.
+      </aside>
+    </section>
+
+    <!-- 6 ------------------------------------------------------------------ -->
+    <section class="slide" data-header="Verification">
+      <h2 class="wide">One definition of done, checked by two parties</h2>
+      <p class="wide">Every issue carries a machine-readable <strong>contract</strong>:</p>
+<pre>id: SEC-001
+category: security
+files: [superset/examples/helpers.py]
+do_not_touch: [tests/, migrations/]
+verify:
+  - ruff check superset/examples/helpers.py
+  - pytest tests/unit_tests/examples/</pre>
+      <ul>
+        <li><strong>Devin</strong> runs those commands in its sandbox before opening the PR</li>
+        <li><strong>CI on the pull request</strong> reads the same block off the same issue and runs them again</li>
+      </ul>
+      <p class="small">One of the two has no stake in the answer. That is the entire point.</p>
+      <aside class="notes">
+        The contract is also the refusal surface: an issue without a valid block
+        is rejected at intake and never becomes a paid session.
+      </aside>
+    </section>
+
+    <!-- 7 ------------------------------------------------------------------ -->
+    <section class="slide" data-header="The principle">
+      <h2 class="wide">The principle</h2>
+      <div class="big center">
+        Independent evidence outranks<br>what the agent says about its own work.
+      </div>
+      <p class="wide">
+        And it has to cut <strong>both ways</strong>, or it is only a rule about
+        which errors you prefer to keep.
+      </p>
+      <ul>
+        <li><strong>Demote</strong> a “fixed” that does not build — easy, everyone does this</li>
+        <li><strong>Promote</strong> a stale failure that CI has since verified — the hard direction</li>
+      </ul>
+      <blockquote>
+        <p>
+          QUAL-002 was recorded <code>failed</code> because Devin reported it was
+          blocked. It was right to. We amended the contract, it pushed, CI went
+          green on the same PR — and the record still said <code>failed</code>,
+          on a snapshot taken before any of that.
+        </p>
+      </blockquote>
+      <aside class="notes">
+        Narrow by design: a pull request must exist, and CI must have passed on
+        it. Nothing promotes a remediation that produced no code.
+      </aside>
+    </section>
+
+    <!-- 8 ------------------------------------------------------------------ -->
+    <section class="slide" data-header="Measurement">
+      <h2 class="wide">If I were an engineering leader, how would I know this is working?</h2>
+      <table class="metrics">
+        <tbody>
+          <tr>
+            <td>Merge rate</td>
+            <td class="fig">100% (5 of 5)</td>
+            <td>an unmerged PR is work the org declined</td>
+          </tr>
+          <tr>
+            <td>Success rate</td>
+            <td class="fig">100% of 5 concluded</td>
+            <td>12 withdrawn are excluded — a cancellation is a decision, not a verdict</td>
+          </tr>
+          <tr>
+            <td>Issue → PR</td>
+            <td class="fig">median 17.6m</td>
+            <td>agent latency</td>
+          </tr>
+          <tr>
+            <td>PR → merged</td>
+            <td class="fig">median 67.7m</td>
+            <td><em>human</em> review latency, reported separately</td>
+          </tr>
+          <tr>
+            <td>CI verdicts</td>
+            <td class="fig">5 passed, 2 self-corrections</td>
+            <td>how often the independent check rejected the work, and how often it was fixed with no human</td>
+          </tr>
+          <tr>
+            <td>ACUs</td>
+            <td class="fig">not reported for this account</td>
+            <td>“not measured” and “free” are different claims</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="small">
+        Dashboard · Prometheus <code>/metrics</code> · <code>npm run report</code>
+        — reads SQLite directly, so it works when the service is down.
+      </p>
+      <aside class="notes">
+        The denominators are the argument. Summing the two latencies would let a
+        slow reviewer make the agent look slow.
+      </aside>
+    </section>
+
+    <!-- 9 ------------------------------------------------------------------ -->
+    <section class="slide" data-header="Why Devin · 1 of 2">
+      <h2 class="wide">Why Devin — 1. It argues back, and it is right</h2>
+      <p class="wide">
+        <strong>QUAL-002.</strong> The contract said verify with
+        <code>tsc --noEmit -p tsconfig.json</code>.
+      </p>
+      <p class="wide">Devin got the other checks green, then <strong>stopped</strong> and reported:</p>
+      <blockquote>
+        <p>
+          the type-check fails with 598 <code>TS6305</code> errors in <em>any</em>
+          clean checkout — the root tsconfig uses project references whose
+          outputs must be built first — and fixing that is outside this
+          contract’s scope.
+        </p>
+      </blockquote>
+      <p class="wide">That was correct.</p>
+      <ul>
+        <li>A codemod fails silently</li>
+        <li>A worse agent disables the check to get green</li>
+        <li>The fix was to amend <strong>the contract</strong>, in the issue, which Devin <em>and</em> CI read</li>
+      </ul>
+      <aside class="notes">
+        It also declined twice to open a duplicate PR when it found its own
+        earlier work. That is judgement, not retry logic.
+      </aside>
+    </section>
+
+    <!-- 10 ----------------------------------------------------------------- -->
+    <section class="slide tight" data-header="Why Devin · 2 of 2">
+      <h2 class="wide">Why Devin — 2. It refuses, and explains</h2>
+      <p class="wide">
+        <strong>QUAL-001.</strong> We built auto-merge: green CI + low-risk
+        category → Devin merges its own PR. We asked it to. It came back with:
+      </p>
+      <blockquote>
+        <p>
+          <code>gh pr merge</code> is exactly what I ran and <strong>my
+          guardrail</strong> rejected it — the block is in my tooling and keys
+          off the base branch being <code>main</code>/<code>master</code>, not
+          anything GitHub reports, so auto-merge would hit the same rule and
+          <strong>I won’t try it as a workaround</strong>.
+        </p>
+      </blockquote>
+      <p class="wide">Then it named the two things that <em>would</em> permit a merge.</p>
+      <p class="claims">
+        It <strong>refused</strong> · <strong>explained</strong> ·
+        <strong>distinguished its own policy from the platform’s</strong> ·
+        <strong>declined the workaround</strong>
+      </p>
+      <div class="big center">That is the case for an autonomous agent.</div>
+      <p class="small">
+        Not that it writes the patch — plenty of things write patches. It is
+        that when the task as specified is wrong, it says so, and you can build
+        a system that listens.
+      </p>
+      <aside class="notes">
+        Do not claim Devin merged anything. It did not, and why it did not is
+        the better story.
+      </aside>
+    </section>
+
+    <!-- 11 ----------------------------------------------------------------- -->
+    <section class="slide" data-header="Credibility">
+      <h2 class="wide">What the system refuses to claim</h2>
+      <div class="big center">Autopilot asks for a merge. It never records one.</div>
+      <ul>
+        <li>Nothing on that path writes <code>pr_state</code> — the merge is read back from GitHub, like any other observer</li>
+        <li>A merge that never happened shows up as a pull request <strong>still open</strong>, not a shipped fix</li>
+        <li>After a grace period it labels the issue <code>autopilot:needs-human</code> and <strong>quotes the session verbatim</strong> — no keyword-matching the refusal, because that would be the system inventing a reason</li>
+      </ul>
+      <div class="spacer"></div>
+      <p class="small">An escalation nobody is told about is the same as a failure nobody sees.</p>
+      <aside class="notes">
+        This slide is the credibility slide. A system that only reports its wins
+        is not observable, it is marketing.
+      </aside>
+    </section>
+
+    <!-- 12 ----------------------------------------------------------------- -->
+    <section class="slide" data-header="Next">
+      <h2 class="wide">Next, in a real engagement</h2>
+      <div class="next-item">
+        <h3>Confidence as the merge gate, not category.</h3>
+        <p>
+          Today the tier is a label — a proxy for risk, not a measure of it.
+          Diff size, blast radius, whether the change stayed inside the modules
+          the contract named.
+        </p>
+      </div>
+      <div class="next-item">
+        <h3>Human review into the loop, not just CI.</h3>
+        <p>
+          The rework loop answers to the build. <code>pull_request_review</code>
+          comments could go back into the same session, so “why not use X here?”
+          is answered in-session.
+        </p>
+      </div>
+      <div class="next-item">
+        <h3>Contracts from scanners.</h3>
+        <p>
+          Every issue here was hand-written and verified. Intake does not care
+          where an issue came from — Dependabot, CodeQL, Sentry. That is where
+          the volume is.
+        </p>
+      </div>
+    </section>
+
+    <!-- 13 ----------------------------------------------------------------- -->
+    <section class="slide" data-header="Run it yourself">
+      <h2 class="wide">Run it yourself</h2>
+<pre>git clone https://github.com/watilde/Autopilot.git &amp;&amp; cd Autopilot
+docker compose up --build -d
+npm install &amp;&amp; npm run simulate      # five signed webhooks, end to end
+open http://localhost:8080</pre>
+      <p class="wide">
+        Defaults to <code>DEVIN_MODE=mock</code> — the whole pipeline, no API
+        key, no ACUs.
+      </p>
+      <div class="links">
+        <span class="label">Solution</span> github.com/watilde/Autopilot<br>
+        <span class="label">Fork</span> github.com/watilde/superset · issues #1–#5, pull requests #6–#10
+      </div>
+      <div class="spacer"></div>
+      <p class="small">
+        158 tests, no network. Most of the auto-merge tests are cases that must
+        <em>not</em> merge.
+      </p>
+      <aside class="notes">
+        Close on the mock mode. Anyone in the room can run the whole thing in
+        two minutes without a credential, and that is what makes the numbers
+        checkable.
+      </aside>
+    </section>
+
+  </div>
+</div>
+
+<div id="counter"></div>
+<div id="help"><kbd>←</kbd> <kbd>→</kbd> move · <kbd>F</kbd> fullscreen · <kbd>N</kbd> notes · <kbd>P</kbd> print</div>
+<div id="notes-panel"><span class="tag">Presenter note</span><div id="notes-body"></div></div>
+
+<script>
+(function () {
+  'use strict';
+
+  var stage  = document.getElementById('stage');
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var bar    = document.getElementById('progress');
+  var count  = document.getElementById('counter');
+  var notes  = document.getElementById('notes-body');
+  var index  = 0;
+
+  /* The stage is a fixed 1280×720 box; scale it to whatever it is shown on so
+     no slide reflows between the laptop, the projector, and the PDF. */
+  function fit() {
+    var pad = 48;
+    var scale = Math.min(
+      (window.innerWidth  - pad) / stage.offsetWidth,
+      (window.innerHeight - pad) / stage.offsetHeight
+    );
+    stage.style.transform = 'scale(' + scale + ')';
+  }
+
+  function show(next) {
+    index = Math.max(0, Math.min(slides.length - 1, next));
+    slides.forEach(function (s, i) { s.classList.toggle('current', i === index); });
+
+    bar.style.width = ((index + 1) / slides.length * 100) + '%';
+    count.textContent = (index + 1) + ' / ' + slides.length;
+
+    var note = slides[index].querySelector('.notes');
+    notes.innerHTML = note ? note.innerHTML : '<em>No note for this slide.</em>';
+
+    if (String(index + 1) !== location.hash.slice(1)) {
+      history.replaceState(null, '', '#' + (index + 1));
+    }
+  }
+
+  function fromHash() {
+    var n = parseInt(location.hash.slice(1), 10);
+    show(isNaN(n) ? 0 : n - 1);
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+    switch (e.key) {
+      case 'ArrowRight': case 'ArrowDown': case ' ': case 'PageDown':
+        show(index + 1); e.preventDefault(); break;
+      case 'ArrowLeft': case 'ArrowUp': case 'PageUp':
+        show(index - 1); e.preventDefault(); break;
+      case 'Home':
+        show(0); e.preventDefault(); break;
+      case 'End':
+        show(slides.length - 1); e.preventDefault(); break;
+      case 'f': case 'F':
+        if (document.fullscreenElement) document.exitFullscreen();
+        else document.documentElement.requestFullscreen();
+        e.preventDefault(); break;
+      case 'n': case 'N':
+        document.body.classList.toggle('notes-on'); e.preventDefault(); break;
+      case 'p': case 'P':
+        window.print(); e.preventDefault(); break;
+    }
+  });
+
+  window.addEventListener('resize', fit);
+  window.addEventListener('hashchange', fromHash);
+  document.addEventListener('fullscreenchange', fit);
+
+  fit();
+  fromHash();
+})();
+</script>
+
+</body>
+</html>

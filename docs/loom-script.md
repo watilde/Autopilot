@@ -1,18 +1,42 @@
-# Loom script — 5 minutes
+# Script — 5 minutes
+
+The spoken words for both formats: the recorded Loom, and the live walkthrough
+off `slides.html`. There is one script because there is one argument — the deck
+is the same case with the prose removed, so a second copy of the narration would
+only be a second thing to keep true.
 
 Audience: VP of Engineering + senior ICs, curious about Devin. They have seen
 demos where an agent writes a patch. What they have not seen is a system that
 decides whether to believe it.
+
+**Figures live in the deck, not here.** Merge rate, medians, test count — read
+them off the slide. This file states them only where the sentence collapses
+without one, so there is one place to correct when they move.
+
+## Which slide is up
+
+| Section | Slides |
+|---|---|
+| 0:00 – 0:40 · What | 1 · 2 · 3 |
+| 0:40 – 2:00 · How — the demo | 6 · 4, then 8 (live demo instead, if recording) |
+| 2:00 – 3:10 · How — the decision | 5 · 7 · 11 |
+| 3:10 – 4:20 · Why Devin | 9 · 10 |
+| 4:20 – 5:00 · When — next | 12 · 13 |
+
+Presenting from the deck: <kbd>N</kbd> shows the stage direction for each slide —
+how to land it, what not to claim. Those are deliberately not the words to say;
+the words are here.
 
 **Before recording**, have these open in tabs:
 
 1. `http://localhost:8080` — dashboard, seeded (`npm run simulate`)
 2. https://github.com/watilde/superset/issues — the five issues, all
    `autopilot:succeeded`
-3. https://github.com/watilde/superset/issues/5 — QUAL-002, the pushback thread
-4. https://github.com/watilde/superset/issues/3 — QUAL-001, the merge-refusal thread
-5. `src/core/orchestrator.ts` — at `settleOnIndependentVerification`
-6. A terminal in the repo
+3. https://github.com/watilde/superset/pull/8 — DEP-001, the audit Devin wrote
+4. https://github.com/watilde/superset/issues/5 — QUAL-002, the pushback thread
+5. https://github.com/watilde/superset/issues/3 — QUAL-001, the merge-refusal thread
+6. `src/core/orchestrator.ts` — at `settleOnIndependentVerification`
+7. A terminal in the repo
 
 One rule for the recording: **do not narrate what is on screen.** Say the thing
 the screen cannot say.
@@ -20,6 +44,8 @@ the screen cannot say.
 ---
 
 ## 0:00 – 0:40 · What
+<!-- Slides 1 → 2 → 3. Move on "So the obvious move…" and on "This is Autopilot." -->
+
 
 > "Every engineering org has a backlog of work that is real, small, and never
 > urgent enough. Known vulnerabilities. A dependency pin nobody can justify
@@ -41,6 +67,9 @@ Show: the fork's issue list, five green `autopilot:succeeded` labels.
 ---
 
 ## 0:40 – 2:00 · How — the demo
+<!-- Recording: run it live. Presenting: slide 6 for the contract, slide 4 for
+     what came back, slide 8 for the numbers, and offer slide 13 to anyone who
+     wants to run it themselves. -->
 
 Run the whole thing live, mock mode, no credentials:
 
@@ -65,16 +94,36 @@ Show the contract block in an issue:
 > commands again** — one definition of done, checked by two parties, one of
 > which has no stake in the answer."
 
+Then what came back — open PR #8, or slide 4, which is the same body:
+
+> "This is the pull request for the dependency issue. The pin says
+> `setuptools<81`, and the comment justifying it names a package that is not in
+> this repository's dependency tree. Nobody had ever measured it. Devin did:
+> `pkg_resources` is removed in 82, not 81. Exactly one runtime dependency still
+> imports it. The release of that dependency which fixes it needs SQLAlchemy 2.0,
+> which Superset does not support — so the ceiling stays, and now there is a
+> reason on file.
+>
+> The half that matters is underneath. The evidence is *in the pull request* —
+> the commands, and what they printed — so a reviewer settles it in a minute
+> without redoing the investigation and without taking the agent's word for
+> anything. That is not this session being thorough. The playbook makes it
+> mandatory: the body carries what was run and what it printed."
+
 Then the dashboard:
 
 > "Merge rate, not PR count. An unmerged PR is work the organisation declined.
 > Time-to-PR separately from time-to-merge, because the second one is human
 > review latency and summing them lets a slow reviewer make the agent look slow.
-> ACUs per merged PR — a defensible unit cost."
+> And ACUs are on there reading *not reported for this account* — the meter is
+> wired, this account does not return the figure, and 'not measured' and 'free'
+> are different claims."
 
 ---
 
 ## 2:00 – 3:10 · How — the architectural decision
+<!-- Slide 5 to place the pieces, slide 7 for the principle, slide 11 for what
+     the system refuses to claim. Recording: `orchestrator.ts` instead of 5. -->
 
 Open `orchestrator.ts` at `settleOnIndependentVerification`.
 
@@ -105,6 +154,8 @@ Optional, if the pacing allows — this one lands with engineers:
 ---
 
 ## 3:10 – 4:20 · Why Devin
+<!-- Slides 9 and 10. Presenting, the quotes are on the slides — let them read.
+     Recording, open the issues themselves; the thread beats a quotation. -->
 
 This is the section that decides the pitch. Two artefacts, both real, both on
 screen.
@@ -141,6 +192,8 @@ screen.
 ---
 
 ## 4:20 – 5:00 · When — next steps
+<!-- Slide 12 for the three, slide 13 to close on. -->
+
 
 > "In a real engagement, three things next.
 >
@@ -172,3 +225,10 @@ screen.
   same numbers, same source, works when the service is down.
 - Do not claim Devin merged anything. It did not, and the reason it did not is
   one of the better moments in the demo.
+- Presenting rather than recording, the demo section is the one that changes:
+  slides 6 and 8 carry the contract and the numbers, but a live `npm run
+  simulate` is worth more than either. Run it if the room allows.
+- The pull request itself is worth the thirty seconds it costs. Everything up to
+  that point is the org's side of the contract; PR #8 is the only place the room
+  sees what came back — and it is the artefact, not the dashboard, that a
+  sceptical engineer will actually judge this on.

@@ -699,12 +699,19 @@ scripts/
   report.ts          terminal report
   sync-labels.ts     repair labels that drifted from the record
 docs/
-  slides.md          Marp deck for the walkthrough
-  loom-script.md     the same argument, timed for five minutes
+  slides.html        the deck — thirteen slides, open it, no build step
+  loom-script.md     the script: what to say, timed for five minutes
 ```
 
-Render the deck with
-`npx @marp-team/marp-cli@latest docs/slides.md -o docs/slides.html` (or `--pdf`).
+Open `docs/slides.html` in a browser and present: <kbd>←</kbd> <kbd>→</kbd> to move,
+<kbd>F</kbd> for fullscreen, <kbd>N</kbd> for the stage direction on each slide,
+<kbd>P</kbd> to print (one slide per landscape page — that is how the PDF is made).
+No CDN, no network, nothing to install.
+
+The words to say are in [`docs/loom-script.md`](docs/loom-script.md), which maps
+its five sections onto the slides. One script for both the recording and the live
+walkthrough: a second copy of the narration would only be a second thing to keep
+true.
 
 The CI half lives in the target repository, not here:
 [`.github/workflows/autopilot-verify.yml`](https://github.com/watilde/superset/blob/master/.github/workflows/autopilot-verify.yml).
