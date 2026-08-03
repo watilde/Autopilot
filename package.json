@@ -17,7 +17,8 @@
     "seed": "tsx --env-file-if-exists=.env scripts/seed-issues.ts",
     "devin:setup": "tsx --env-file-if-exists=.env scripts/devin-setup.ts",
     "simulate": "tsx --env-file-if-exists=.env scripts/simulate.ts",
-    "report": "tsx --env-file-if-exists=.env scripts/report.ts"
+    "report": "tsx --env-file-if-exists=.env scripts/report.ts",
+    "labels:sync": "tsx --env-file-if-exists=.env scripts/sync-labels.ts"
   },
   "dependencies": {
     "@octokit/rest": "^21.1.1",

@@ -64,6 +64,18 @@ export interface AutoMergePolicy {
  */
 const NEVER_AUTO_MERGE = new Set(['security']);
 
+/**
+ * The labels that describe an outcome. Exactly one belongs on an issue at a
+ * time, which is why they are enumerated rather than derived: to set one, the
+ * others have to be named so they can be taken off.
+ */
+const STATE_LABELS = ['succeeded', 'failed', 'timed_out', 'cancelled'].map(
+  (s) => `autopilot:${s}`,
+);
+
+/** Not a state — a request for attention, cleared when it is answered. */
+const NEEDS_HUMAN = 'autopilot:needs-human';
+
 export class Orchestrator {
   private timer: NodeJS.Timeout | null = null;
   private ticking = false;
@@ -592,6 +604,9 @@ export class Orchestrator {
         'has been corrected to `succeeded`.',
       ].join('\n'),
     );
+    // The label has to move with the state, or the correction is only visible
+    // to someone who reads the comments.
+    await this.syncIssueLabels(r.issueNumber, 'succeeded');
     return true;
   }
 
@@ -881,6 +896,9 @@ export class Orchestrator {
           r.issueNumber,
           `### 🚢 Shipped\n\nPull request ${pr.url} was merged. This remediation is complete end to end.`,
         );
+        // Shipping answers any outstanding request for a human, including the
+        // one this system raises when it cannot merge for itself.
+        await this.syncIssueLabels(r.issueNumber, r.state, { resolved: true });
       }
     }
     return changed;
@@ -1167,8 +1185,103 @@ export class Orchestrator {
     await this.github.comment(r.issueNumber, this.summaryComment(updated, state, seconds));
 
     if (isTerminal(state)) {
-      await this.github.addLabels(r.issueNumber, [`autopilot:${state}`]);
+      await this.syncIssueLabels(r.issueNumber, state);
     }
+  }
+
+  /**
+   * Make the issue's labels say what is actually true.
+   *
+   * `autopilot:<state>` is a projection of current state, so exactly one of
+   * them belongs on an issue — but this path only ever *added*, and add is not
+   * set. A remediation that timed out and was later corrected to `succeeded`
+   * kept both, and GitHub renders the older one first.
+   *
+   * That is not hypothetical: four of this deployment's five issues read
+   * `timed_out`, `failed` or `needs-human` while their pull requests were
+   * merged. The dashboard said 100% success and the place anyone actually looks
+   * said the opposite — which is a worse failure than either number being wrong,
+   * because it makes the honest one unbelievable too.
+   *
+   * `autopilot:needs-human` is handled separately because it is not a state. It
+   * is a request for attention, so it is cleared when the thing it asked for
+   * happened — a merged pull request — not when the state changes.
+   */
+  private async syncIssueLabels(
+    issueNumber: number,
+    state: RemediationState,
+    opts: { resolved?: boolean } = {},
+  ): Promise<void> {
+    if (!this.github.enabled) return;
+
+    const want = `autopilot:${state}`;
+    const issue = await this.github.getIssue(issueNumber);
+    // Without a reading of what is there, removing is guesswork; adding the
+    // right label is still strictly better than doing nothing.
+    const current = issue?.labels ?? [];
+
+    for (const label of current) {
+      const staleState = STATE_LABELS.includes(label) && label !== want;
+      const answered = opts.resolved && label === NEEDS_HUMAN;
+      if (staleState || answered) await this.github.removeLabel(issueNumber, label);
+    }
+
+    if (!current.includes(want)) await this.github.addLabels(issueNumber, [want]);
+  }
+
+  /**
+   * Repair labels that drifted from the record.
+   *
+   * The write paths keep this true going forward, but two things put issues out
+   * of step in the first place: outcomes recorded before those paths set labels
+   * rather than added them, and `addLabels` swallowing its own failures — it
+   * logs and returns, because a label is reporting and must never take down a
+   * remediation that is otherwise progressing. Both leave the same residue, and
+   * neither heals on its own.
+   *
+   * Deliberately not part of the reconciler tick. Drift is rare and bounded,
+   * while a per-issue read on every pass would be a standing API cost forever
+   * to catch it; this is a repair to run when the record and the labels are
+   * known to disagree. `npm run labels:sync`.
+   */
+  async reconcileIssueLabels(): Promise<number> {
+    if (!this.github.enabled) return 0;
+    let fixed = 0;
+
+    // One label per issue, so one attempt has to speak for it — and the attempt
+    // that produced the pull request is often *not* the newest row, because a
+    // duplicate that was correctly cancelled sits on top of it. Labelling from
+    // the newest row is how an issue whose fix shipped ends up reading
+    // `cancelled`; the dedup gate learned this first, in
+    // `findLivePullRequestForIssue`, and this reconcile has to know it too.
+    const seen = new Set<number>();
+    for (const row of this.store.listAll(500)) {
+      if (seen.has(row.issueNumber)) continue;
+      seen.add(row.issueNumber);
+
+      const r =
+        this.store.findLivePullRequestForIssue(row.repo, row.issueNumber) ??
+        this.store.findLatestByIssue(row.repo, row.issueNumber);
+      if (!r || !isTerminal(r.state)) continue;
+
+      const issue = await this.github.getIssue(r.issueNumber);
+      if (!issue) continue;
+
+      const want = `autopilot:${r.state}`;
+      const resolved = r.prState === 'merged';
+      const wrong = issue.labels.some(
+        (l) => (STATE_LABELS.includes(l) && l !== want) || (resolved && l === NEEDS_HUMAN),
+      );
+      if (!wrong && issue.labels.includes(want)) continue;
+
+      logger.info(
+        { remediation: r.id, issue: r.issueNumber, was: issue.labels, want, resolved },
+        'issue labels disagreed with the record; correcting',
+      );
+      await this.syncIssueLabels(r.issueNumber, r.state, { resolved });
+      fixed++;
+    }
+    return fixed;
   }
 
   private summaryComment(r: Remediation, state: RemediationState, seconds: number): string {

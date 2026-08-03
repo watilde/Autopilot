@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { Store } from '../src/db/index.js';
+import type { RemediationState } from '../src/types.js';
 import { DevinMockClient } from '../src/devin/mock.js';
 import { GitHubClient, type IssueRef } from '../src/github/client.js';
 import { Orchestrator, type AutoMergePolicy } from '../src/core/orchestrator.js';
@@ -17,14 +18,62 @@ function issue(overrides: Partial<IssueRef> = {}): IssueRef {
   };
 }
 
-function harness(mock?: DevinMockClient, autoMerge?: AutoMergePolicy) {
+/**
+ * A GitHub that remembers. The default client in this harness has no token and
+ * is inert, which is right for every test that only cares about state — but
+ * labels are the one output that lives entirely on GitHub, so asserting on them
+ * needs something that records.
+ */
+class RecordingGitHub extends GitHubClient {
+  labels = new Map<number, Set<string>>();
+
+  constructor(seed: Record<number, string[]> = {}) {
+    // No token, so every method this class does not override stays inert and
+    // no test can reach the network. Only the label surface is real.
+    super(undefined, 'watilde', 'superset');
+    for (const [n, ls] of Object.entries(seed)) this.labels.set(Number(n), new Set(ls));
+  }
+
+  labelsOn(issueNumber: number): string[] {
+    return [...(this.labels.get(issueNumber) ?? [])].sort();
+  }
+
+  override get enabled(): boolean {
+    return true;
+  }
+
+  override async getIssue(number: number) {
+    return {
+      number,
+      title: 't',
+      body: null,
+      htmlUrl: '',
+      labels: this.labelsOn(number),
+      state: 'open',
+    };
+  }
+
+  override async addLabels(issueNumber: number, labels: string[]): Promise<void> {
+    const set = this.labels.get(issueNumber) ?? new Set<string>();
+    for (const l of labels) set.add(l);
+    this.labels.set(issueNumber, set);
+  }
+
+  override async removeLabel(issueNumber: number, label: string): Promise<void> {
+    this.labels.get(issueNumber)?.delete(label);
+  }
+
+  override async comment(): Promise<void> {}
+}
+
+function harness(mock?: DevinMockClient, autoMerge?: AutoMergePolicy, gh?: GitHubClient) {
   const store = new Store(':memory:');
   const devin = mock ?? new DevinMockClient({ pollsUntilTerminal: 1, forceOutcome: 'fixed' });
   // No token → GitHub is inert, which is exactly the demo/offline path.
-  const github = new GitHubClient(undefined, 'watilde', 'superset');
+  const github = gh ?? new GitHubClient(undefined, 'watilde', 'superset');
   // Omitting the policy leaves the orchestrator on its shipped default, which
   // is how the "off unless asked for" tests get their subject.
-  return { store, devin, orchestrator: new Orchestrator(store, devin, github, autoMerge) };
+  return { store, devin, github, orchestrator: new Orchestrator(store, devin, github, autoMerge) };
 }
 
 describe('intake', () => {
@@ -834,6 +883,117 @@ describe('auto-merge', () => {
       expect(await h.orchestrator.escalateUnperformedMerges()).toBe(0);
       expect(h.store.get(h.remediation.id)!.mergeEscalatedAt).toBeNull();
     });
+  });
+});
+
+/**
+ * The issue thread is where anyone outside the team actually looks, and for a
+ * long time it disagreed with the record: four of five issues wore
+ * `timed_out`, `failed` or `needs-human` while their pull requests were merged,
+ * because the write path added labels and never removed them. A dashboard
+ * saying 100% next to issues saying "failed" is worse than either being wrong
+ * on its own — it makes the honest number unbelievable too.
+ */
+describe('issue labels', () => {
+  /**
+   * State is built directly rather than driven through the pipeline: these
+   * assert what the labels become, and threading a whole session through a
+   * GitHub double would only add ways for the setup to be the thing that broke.
+   */
+  function withLabels(seed: string[], state: RemediationState, opts: { merged?: boolean } = {}) {
+    const github = new RecordingGitHub({ 101: seed });
+    const h = harness(undefined, undefined, github);
+    const r = h.store.create({
+      repo: 'watilde/superset',
+      issueNumber: 101,
+      issueUrl: '',
+      title: 'Unsafe YAML deserialization',
+      contractId: 'SEC-001',
+      category: 'security',
+      severity: 'high',
+      triggeredBy: 'test',
+    });
+    h.store.transition(r.id, state, {
+      prUrl: 'https://github.com/watilde/superset/pull/6',
+      devinSessionId: 'session-1',
+      error: state === 'succeeded' ? null : 'reported blocked',
+    });
+    h.store.recordPullRequest(r.id, {
+      state: opts.merged ? 'merged' : 'open',
+      mergedAt: opts.merged ? '2026-08-03T03:56:49Z' : null,
+    });
+    return { ...h, github, remediation: h.store.get(r.id)! };
+  }
+
+  it('moves the outcome label instead of stacking a rival next to it', async () => {
+    const h = withLabels(['autopilot', 'security', 'autopilot:timed_out'], 'failed');
+
+    // CI going green corrects the record; the label has to follow it.
+    await h.orchestrator.handleCiResult({
+      branch: 'autopilot/sec-001-issue-101',
+      conclusion: 'success',
+      runId: 501,
+      runUrl: null,
+    });
+
+    expect(h.store.get(h.remediation.id)!.state).toBe('succeeded');
+    const labels = h.github.labelsOn(101);
+    expect(labels).toContain('autopilot:succeeded');
+    expect(labels).not.toContain('autopilot:timed_out');
+    // Labels this system does not own are left alone.
+    expect(labels).toContain('security');
+  });
+
+  it('repairs drift and reports how much it found', async () => {
+    const h = withLabels(['autopilot', 'autopilot:timed_out'], 'succeeded');
+
+    expect(await h.orchestrator.reconcileIssueLabels()).toBe(1);
+    expect(h.github.labelsOn(101)).toEqual(['autopilot', 'autopilot:succeeded']);
+
+    // Idempotent: nothing left to fix on a second pass.
+    expect(await h.orchestrator.reconcileIssueLabels()).toBe(0);
+  });
+
+  /** `needs-human` is a request, not a state: it ends when it is answered. */
+  it('keeps needs-human while the pull request is still open', async () => {
+    const h = withLabels(['autopilot', 'autopilot:needs-human'], 'succeeded');
+
+    await h.orchestrator.reconcileIssueLabels();
+    expect(h.github.labelsOn(101)).toContain('autopilot:needs-human');
+  });
+
+  /**
+   * The hazard the dedup gate already knew about, arriving here too: the
+   * attempt that shipped is usually not the newest row, because a duplicate
+   * that was correctly cancelled sits on top of it. Labelling from the newest
+   * row put `autopilot:cancelled` on issues whose fixes were merged — caught
+   * by running the repair against the real fork, not by the suite.
+   */
+  it('labels from the attempt that shipped, not the newest one', async () => {
+    const h = withLabels(['autopilot', 'autopilot:timed_out'], 'succeeded', { merged: true });
+
+    // A later duplicate that was stopped before it could open anything.
+    const dup = h.store.create({
+      repo: 'watilde/superset',
+      issueNumber: 101,
+      issueUrl: '',
+      title: 'duplicate',
+      contractId: 'SEC-001',
+      category: 'security',
+      severity: 'high',
+      triggeredBy: 'scheduled-scan',
+    });
+    h.store.transition(dup.id, 'cancelled', { error: 'duplicate' });
+
+    await h.orchestrator.reconcileIssueLabels();
+    expect(h.github.labelsOn(101)).toEqual(['autopilot', 'autopilot:succeeded']);
+  });
+
+  it('clears needs-human once the pull request merged', async () => {
+    const h = withLabels(['autopilot', 'autopilot:needs-human'], 'succeeded', { merged: true });
+
+    expect(await h.orchestrator.reconcileIssueLabels()).toBe(1);
+    expect(h.github.labelsOn(101)).toEqual(['autopilot', 'autopilot:succeeded']);
   });
 });
 
