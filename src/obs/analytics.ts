@@ -73,7 +73,19 @@ export interface AnalyticsSnapshot {
    * send work back, but folding them together would let a reviewer's change of
    * mind inflate a figure that claims the agent fixed its own mistakes.
    */
-  reviews: { approved: number; changesRequested: number; revisions: number };
+  reviews: {
+    /** Reviews on GitHub with state `approved` — readable by anyone. */
+    approved: number;
+    /**
+     * Approvals that exist only as the reviewing session's own report. GitHub
+     * refuses an approval from the account that opened the pull request, so
+     * when the reviewer is an agent on the same integration this is the only
+     * form the verdict can take. Counted separately because it is worth less.
+     */
+    agentApproved: number;
+    changesRequested: number;
+    revisions: number;
+  };
   /**
    * `reported` is false when the provider returned no ACU figures at all. That
    * is not the same as "this was free", and the difference matters when the
@@ -290,6 +302,16 @@ export function buildAnalytics(store: Store): AnalyticsSnapshot {
              SUM(CASE WHEN type = 'review.changes_requested' THEN 1 ELSE 0 END) AS changes
         FROM events
     `)[0] ?? {};
+
+  // Read off the row rather than the log: an agent may report a verdict more
+  // than once across revisions, and what matters is how many pull requests
+  // currently stand on one.
+  const agentApproved = num(
+    store.query(
+      `SELECT COUNT(*) AS c FROM remediations
+        WHERE review_verdict = 'approved' AND review_verdict_src = 'agent'`,
+    )[0]?.c,
+  );
   const mergeRow =
     store.query(`
       SELECT SUM(CASE WHEN merge_requested_at IS NOT NULL THEN 1 ELSE 0 END) AS requested,
@@ -337,6 +359,7 @@ export function buildAnalytics(store: Store): AnalyticsSnapshot {
     },
     reviews: {
       approved: num(reviewRow.approved),
+      agentApproved,
       changesRequested: num(reviewRow.changes),
       revisions: num(totalsRow.review_reworks),
     },

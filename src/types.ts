@@ -97,6 +97,15 @@ export interface Remediation {
    * review rather than the same session grading its own instruction.
    */
   reviewSessionId: string | null;
+  /** The standing review verdict, if one has been reached. */
+  reviewVerdict: 'approved' | 'changes_requested' | 'could_not_review' | null;
+  /**
+   * Where that verdict came from. `github` is a review anyone can open and
+   * read; `agent` is the reviewing session's own report, which is all there is
+   * when GitHub refuses the approval because the same account opened the pull
+   * request. Never merge the two — the difference is the argument.
+   */
+  reviewVerdictSource: 'github' | 'agent' | null;
   /**
    * When Devin was asked to merge the pull request. A record that we asked,
    * not a claim that it merged — the merge itself is observed from GitHub.

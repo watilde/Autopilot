@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS remediations (
   reworks            INTEGER NOT NULL DEFAULT 0,
   review_reworks     INTEGER NOT NULL DEFAULT 0,
   review_session_id  TEXT,
+  review_verdict     TEXT,
+  review_verdict_src TEXT,
   merge_requested_at TEXT,
   merge_escalated_at TEXT,
   structured_output  TEXT,
@@ -100,6 +102,8 @@ const ADDED_COLUMNS: Array<[table: string, column: string, ddl: string]> = [
   ['remediations', 'merge_escalated_at', 'TEXT'],
   ['remediations', 'review_reworks', 'INTEGER NOT NULL DEFAULT 0'],
   ['remediations', 'review_session_id', 'TEXT'],
+  ['remediations', 'review_verdict', 'TEXT'],
+  ['remediations', 'review_verdict_src', 'TEXT'],
 ];
 
 type Row = Record<string, unknown>;
@@ -128,6 +132,8 @@ function toRemediation(r: Row): Remediation {
     reworks: (r.reworks as number) ?? 0,
     reviewReworks: (r.review_reworks as number) ?? 0,
     reviewSessionId: (r.review_session_id as string) ?? null,
+    reviewVerdict: (r.review_verdict as Remediation['reviewVerdict']) ?? null,
+    reviewVerdictSource: (r.review_verdict_src as Remediation['reviewVerdictSource']) ?? null,
     mergeRequestedAt: (r.merge_requested_at as string) ?? null,
     mergeEscalatedAt: (r.merge_escalated_at as string) ?? null,
     structuredOutput: r.structured_output ? safeParse(r.structured_output as string) : null,
@@ -556,6 +562,44 @@ export class Store {
     this.db
       .prepare('UPDATE remediations SET review_session_id = ?, updated_at = ? WHERE id = ?')
       .run(sessionId, nowIso(), id);
+    return this.get(id)!;
+  }
+
+  /** Remediations with a reviewing session that has not yet reported. */
+  listAwaitingReviewVerdict(): Remediation[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM remediations
+          WHERE review_session_id IS NOT NULL
+            AND review_verdict IS NULL
+          ORDER BY id ASC`,
+      )
+      .all() as Row[];
+    return rows.map(toRemediation);
+  }
+
+  /**
+   * Record a review verdict, and where it came from.
+   *
+   * The source is stored beside the verdict rather than inferred, because the
+   * two are worth very different amounts. `github` means a review with that
+   * state exists on the pull request and anyone can go and look at it.
+   * `agent` means the reviewing session said so about itself — which is the
+   * only thing available when GitHub refuses the approval outright, as it does
+   * when the same account opened the pull request. Collapsing them into one
+   * field would let the weaker claim be read as the stronger one, on a page
+   * whose whole argument is that those are different.
+   */
+  setReviewVerdict(
+    id: number,
+    verdict: string | null,
+    source: 'github' | 'agent' | null,
+  ): Remediation {
+    this.db
+      .prepare(
+        'UPDATE remediations SET review_verdict = ?, review_verdict_src = ?, updated_at = ? WHERE id = ?',
+      )
+      .run(verdict, source, nowIso(), id);
     return this.get(id)!;
   }
 

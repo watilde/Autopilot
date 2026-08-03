@@ -454,13 +454,20 @@ async function refresh() {
 
   // Hidden until a review happens: an empty card here would imply the loop is
   // idle when it may simply never have been used.
-  const anyReview = a.reviews.approved + a.reviews.changesRequested + a.reviews.revisions;
+  const anyReview =
+    a.reviews.approved + a.reviews.changesRequested + a.reviews.revisions + a.reviews.agentApproved;
   const showRev = anyReview ? "" : "none";
   document.getElementById("rev-h").style.display = showRev;
   document.getElementById("rev-card").style.display = showRev;
   document.getElementById("reviews").innerHTML = [
-    vd(a.reviews.approved, "Approved", "a reviewer signed off — the merge still waits for CI",
+    vd(a.reviews.approved, "Approved on GitHub",
+       "a review anyone can open and read — the merge still waits for CI",
        a.reviews.approved ? "ok" : ""),
+    vd(a.reviews.agentApproved, "Approved by the agent",
+       "the reviewing session's report on its own provider's work. GitHub refuses an approval " +
+       "from the account that opened the pull request, so this is all there is — a second " +
+       "opinion, not independent verification",
+       ""),
     vd(a.reviews.changesRequested, "Changes requested",
        "a reviewer wanted something the contract did not specify", ""),
     vd(a.reviews.revisions, "Revisions", "sent back to the same session, counted apart from CI self-corrections", ""),

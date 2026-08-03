@@ -328,6 +328,15 @@ Use the GitHub CLI, on the pull request above.
 - If it needs changes, request them:
   \`gh pr review ${prUrl} --request-changes --body "<what is wrong and what would fix it>"\`
 
+**If GitHub refuses \`--approve\`**, it is almost certainly because the pull request
+was opened by the same account you are running under, and GitHub does not allow
+an account to approve its own pull request. That refusal is correct and must not
+be worked around. Submit the identical body with \`--comment\` instead, say in the
+first line why it is a comment rather than an approval, and still report
+\`verdict: approved\` in your structured result. Autopilot reads that verdict, and
+records it as your report about your own provider's work rather than as an
+approval anyone else gave.
+
 Be specific in the body. The author is another agent and your body is the entire
 instruction it will act on — "this could be cleaner" is not actionable, "this
 duplicates make_id() in superset/utils/core.py; call that instead" is.

@@ -722,6 +722,122 @@ export class Orchestrator {
   }
 
   /**
+   * Collect verdicts from reviewing sessions.
+   *
+   * GitHub will not let an account approve a pull request it opened. Both the
+   * authoring session and the reviewing session run under the same integration,
+   * so a reviewing agent **cannot** submit an approval — it can only leave a
+   * comment saying it would have. That is not a routing problem to work around;
+   * it is GitHub stating, correctly, that this is not an independent approval.
+   *
+   * So the verdict is read from the session's structured output and recorded
+   * with its source set to `agent`. It is enough to release the merge gate,
+   * and everywhere it is shown — the issue comment, the dashboard — says which
+   * kind of approval it is. A reader who thinks "a human approved this" would
+   * be wrong, and nothing here is allowed to let them think it.
+   */
+  async reconcileReviews(): Promise<number> {
+    let settled = 0;
+
+    for (const r of this.store.listAwaitingReviewVerdict()) {
+      if (!r.reviewSessionId) continue;
+
+      let session;
+      try {
+        session = await this.devin.getSession(r.reviewSessionId);
+      } catch (err) {
+        logger.warn(
+          { remediation: r.id, session: r.reviewSessionId, err: (err as Error).message },
+          'could not poll a reviewing session',
+        );
+        continue;
+      }
+
+      const out = (session.structuredOutput ?? null) as {
+        verdict?: string;
+        summary?: string;
+        submitted?: boolean;
+        concerns?: string[];
+        out_of_scope_files?: string[];
+      } | null;
+
+      // A reviewing session reports and then waits, so it is usually `blocked`
+      // rather than finished when the verdict is available. Waiting for a
+      // terminal state would mean never reading it.
+      if (!out?.verdict) {
+        if (session.state === 'finished' || session.state === 'failed') {
+          this.store.setReviewVerdict(r.id, 'could_not_review', 'agent');
+          this.store.appendEvent({
+            remediationId: r.id,
+            issueNumber: r.issueNumber,
+            type: 'review.agent_verdict',
+            detail: { verdict: 'could_not_review', reason: 'session ended without a verdict' },
+          });
+          settled++;
+        }
+        continue;
+      }
+
+      const verdict = out.verdict;
+      this.store.setReviewVerdict(r.id, verdict, 'agent');
+      this.store.appendEvent({
+        remediationId: r.id,
+        issueNumber: r.issueNumber,
+        type: 'review.agent_verdict',
+        detail: { verdict, submitted: out.submitted ?? null, summary: out.summary, output: out },
+      });
+      metrics.reviews.inc({ verdict: `agent_${verdict}`, category: r.category ?? 'unknown' });
+      settled++;
+
+      // The session has said what it came to say. Leaving it waiting on a
+      // reply it will never get keeps a paid session open for nothing.
+      try {
+        await this.devin.terminateSession(r.reviewSessionId);
+      } catch {
+        /* best effort; the verdict is already recorded */
+      }
+
+      logger.info(
+        { remediation: r.id, issue: r.issueNumber, verdict, submitted: out.submitted },
+        'reviewing session reported a verdict',
+      );
+
+      if (verdict !== 'approved') continue;
+
+      await this.github.comment(
+        r.issueNumber,
+        [
+          '### 👀 The reviewing session approved this — with a caveat worth reading',
+          '',
+          `A separate Devin session reviewed ${r.prUrl} against the contract and reported`,
+          '`verdict: approved`.',
+          '',
+          out.submitted
+            ? '**This is not a GitHub approval.** GitHub does not allow an account to approve a'
+            : '**This is not a GitHub approval**, and no review was posted at all. GitHub does not allow an account to approve a',
+          'pull request it opened, and the reviewing session runs under the same integration as',
+          'the session that wrote the code — so the strongest thing it can leave on the pull',
+          'request is a comment. What is recorded here is the agent’s own report about its own',
+          'provider’s work: a second opinion, not independent verification.',
+          '',
+          'The independent check is the contract verification job, which has already run.',
+          '',
+          out.summary ? `> ${out.summary}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n'),
+      );
+
+      const merge = await this.requestMergeIfEligible(this.store.get(r.id)!);
+      if (merge.requested) {
+        logger.info({ remediation: r.id, issue: r.issueNumber }, 'agent approval released the merge gate');
+      }
+    }
+
+    return settled;
+  }
+
+  /**
    * A reviewer's verdict on a pull request Autopilot opened.
    *
    * The rework loop until now answered only to the build, which meant the
@@ -759,6 +875,9 @@ export class Orchestrator {
     const reviewer = input.reviewer ?? 'a reviewer';
 
     if (verdict === 'approved') {
+      // Source `github`: a review anyone can open and read, which is worth more
+      // than the agent's account of itself and is recorded as a different thing.
+      this.store.setReviewVerdict(r.id, 'approved', 'github');
       this.store.appendEvent({
         remediationId: r.id,
         issueNumber: r.issueNumber,
@@ -811,8 +930,10 @@ export class Orchestrator {
 
     const attempt = this.store.incrementReviewReworks(r.id);
     // The reviewer's job is done and its opinion is now the instruction. A
-    // fresh session reviews the response to it.
+    // fresh session reviews the response to it, and the standing verdict goes
+    // with it: an approval of the previous revision says nothing about this one.
     this.store.setReviewSession(r.id, null);
+    this.store.setReviewVerdict(r.id, null, null);
     this.store.appendEvent({
       remediationId: r.id,
       issueNumber: r.issueNumber,
@@ -960,6 +1081,16 @@ export class Orchestrator {
       return { requested: false, reason: `pull request is already ${r.prState}` };
     }
     if (r.ciStatus !== 'passed') return { requested: false, reason: 'ci has not passed' };
+    // With a reviewer in the loop, green is necessary and no longer sufficient.
+    // Approved-by-agent counts, and is recorded as such wherever it is shown;
+    // anything else — pending, changes requested, a review that could not
+    // happen — leaves the pull request where it is.
+    if (this.reviewAgent && r.reviewVerdict !== 'approved') {
+      return {
+        requested: false,
+        reason: r.reviewVerdict ? `review verdict is ${r.reviewVerdict}` : 'waiting on review',
+      };
+    }
     if (!r.devinSessionId) return { requested: false, reason: 'no session to ask' };
     if (NEVER_AUTO_MERGE.has(category)) {
       return { requested: false, reason: `${category} changes never merge unattended` };
@@ -1653,6 +1784,10 @@ export class Orchestrator {
       await this.adoptOrphanedPullRequests();
       await this.syncPullRequests();
       await this.syncCiStatus();
+      // After CI, because a reviewing session is only dispatched once the build
+      // is green, and before the merge escalation, so an approval that arrived
+      // this tick is acted on rather than counted as an unperformed merge.
+      await this.reconcileReviews();
       // After syncPullRequests, so a merge that did land is recorded first and
       // never escalated as if it had not.
       await this.escalateUnperformedMerges();

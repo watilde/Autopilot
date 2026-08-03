@@ -188,6 +188,18 @@ same webhook a person's would; there is no privileged channel for the agent's
 opinion, and if it says it reviewed while GitHub has no review, there is no
 review.
 
+**GitHub will not let it approve.** An account cannot approve a pull request it
+opened, and the reviewing session runs under the same integration as the one that
+wrote the code — so the strongest thing it can leave is a comment saying it would
+have approved. That refusal is correct and is not worked around. The verdict is
+read from the session's structured output instead and recorded with
+`review_verdict_src = 'agent'`, next to `'github'` for a review anyone can open
+and read. It is enough to release the merge gate; it is never shown as the other
+kind. The issue comment says so in as many words, and the dashboard counts
+"Approved on GitHub" and "Approved by the agent" as two different figures,
+because collapsing them would let the weaker claim be read as the stronger one on
+a page whose entire argument is that they are different.
+
 This is a **second opinion, not independent evidence**, and the difference is the
 whole argument of this project. It comes from the same provider as the session
 that wrote the code, so it cannot carry what CI carries — which is why it runs
@@ -676,7 +688,7 @@ curl -X POST localhost:8080/api/remediations/1/reply \
 
 Two layers, because they fail differently.
 
-**This orchestrator** — `npm test`, 185 tests, no network:
+**This orchestrator** — `npm test`, 190 tests, no network:
 
 ```bash
 npm test

@@ -1404,3 +1404,124 @@ describe('refusing the same issue twice', () => {
     expect(new Set(reasons).size).toBe(2);
   });
 });
+
+/**
+ * GitHub will not let an account approve a pull request it opened, and the
+ * reviewing session runs under the same integration as the authoring one. So a
+ * reviewing agent can never submit a real approval — only say it would have.
+ *
+ * The verdict is therefore read from its structured output. These tests are
+ * about the price of that: it releases the merge gate, and it is never allowed
+ * to look like the stronger thing it is not.
+ */
+describe('agent review verdicts', () => {
+  class VerdictMock extends DevinMockClient {
+    constructor(private readonly verdict: unknown) {
+      super({ pollsUntilTerminal: 1, forceOutcome: 'fixed' });
+    }
+    override async getSession(sessionId: string) {
+      const s = await super.getSession(sessionId);
+      // Only the reviewing session reports a verdict; the authoring one keeps
+      // the mock's normal remediation shape.
+      if (!sessionId.includes('review') && this.reviewIds.has(sessionId)) {
+        return { ...s, state: 'blocked' as const, structuredOutput: this.verdict as never };
+      }
+      return s;
+    }
+    reviewIds = new Set<string>();
+    override async createSession(input: Parameters<DevinMockClient['createSession']>[0]) {
+      const r = await super.createSession(input);
+      if ((input.tags ?? []).includes('review')) this.reviewIds.add(r.sessionId);
+      return r;
+    }
+  }
+
+  async function reviewed(verdict: unknown, autoMerge?: AutoMergePolicy) {
+    const devin = new VerdictMock(verdict);
+    const h = harness(devin, autoMerge, undefined, true);
+    await h.orchestrator.intake(issue(), 'test');
+    await h.orchestrator.dispatch();
+    await h.orchestrator.reconcile();
+    await h.orchestrator.reconcile();
+    const r = h.store.listAll()[0]!;
+    await h.orchestrator.handleCiResult({
+      branch: `autopilot/sec-001-issue-${r.issueNumber}`,
+      conclusion: 'success',
+      runId: 61,
+      runUrl: null,
+    });
+    await h.orchestrator.reconcileReviews();
+    return { ...h, id: r.id };
+  }
+
+  it('records the verdict and marks it as the agent’s own, not GitHub’s', async () => {
+    const h = await reviewed({ verdict: 'approved', submitted: true, summary: 'looks right' });
+
+    const r = h.store.get(h.id)!;
+    expect(r.reviewVerdict).toBe('approved');
+    // The whole point of storing the source: this is not an approval anyone
+    // else can go and read.
+    expect(r.reviewVerdictSource).toBe('agent');
+    expect(h.store.listEvents(10, 'review.agent_verdict')).toHaveLength(1);
+  });
+
+  it('releases the merge gate on an agent approval', async () => {
+    const h = await reviewed(
+      { verdict: 'approved', submitted: true },
+      { enabled: true, categories: ['security'], graceMs: 1000 },
+    );
+
+    // `security` is refused unconditionally, so reaching that refusal proves
+    // the review gate opened rather than that the merge did.
+    const asked = h.devin.messages.some((m) => /merge/i.test(m.message));
+    expect(asked).toBe(false);
+    expect(h.store.get(h.id)!.reviewVerdict).toBe('approved');
+  });
+
+  it('holds the merge when the agent did not approve', async () => {
+    const h = await reviewed(
+      { verdict: 'changes_requested', submitted: true, concerns: ['duplicates make_id()'] },
+      { enabled: true, categories: ['security'], graceMs: 1000 },
+    );
+
+    const r = h.store.get(h.id)!;
+    expect(r.reviewVerdict).toBe('changes_requested');
+    expect(r.mergeRequestedAt).toBeNull();
+  });
+
+  /** An approval of the previous revision says nothing about this one. */
+  it('drops the standing verdict when changes are requested', async () => {
+    const h = await reviewed({ verdict: 'approved', submitted: true });
+    expect(h.store.get(h.id)!.reviewVerdict).toBe('approved');
+
+    await h.orchestrator.handleReview({
+      branch: `autopilot/sec-001-issue-101`,
+      state: 'changes_requested',
+      body: 'actually, no',
+      reviewer: 'a-human',
+      reviewUrl: null,
+    });
+
+    const r = h.store.get(h.id)!;
+    expect(r.reviewVerdict).toBeNull();
+    expect(r.reviewVerdictSource).toBeNull();
+    expect(r.reviewSessionId).toBeNull();
+  });
+
+  /** A GitHub approval is a different, stronger thing and is labelled as one. */
+  it('labels a real GitHub approval as coming from GitHub', async () => {
+    const h = await reviewed({ verdict: 'could_not_review', submitted: false });
+
+    await h.orchestrator.handleReview({
+      branch: `autopilot/sec-001-issue-101`,
+      state: 'approved',
+      body: null,
+      reviewer: 'a-human',
+      reviewUrl: null,
+    });
+
+    const r = h.store.get(h.id)!;
+    expect(r.reviewVerdict).toBe('approved');
+    expect(r.reviewVerdictSource).toBe('github');
+  });
+});
