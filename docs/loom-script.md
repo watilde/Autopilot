@@ -9,7 +9,7 @@ demos where an agent writes a patch. What they have not seen is a system that
 decides whether to believe it.
 
 **The demo is the middle two minutes and it is mostly silence.** Everything else
-is cut to the bone to pay for it: **590 spoken words, about three and a half
+is cut to the bone to pay for it: **644 spoken words, about four
 minutes**, so the rest of the five is the system working. Resist filling the
 waits — a thing working in front of people is more persuasive than a person
 talking over it.
@@ -30,9 +30,9 @@ you are from the section heading.
 | Section | Slides | Words |
 |---|---|---|
 | 0:00 – 0:35 · What | **1 · 2 · 3** | 78 |
-| 0:35 – 2:45 · How — **the live run** | **4** → the browser → **5** | 190 |
+| 0:35 – 2:45 · How — **the live run** | **4** → the browser → **5** | 244 |
 | 2:45 – 3:25 · How — the decision | **6 · 7 · 8** | 83 |
-| 3:25 – 4:25 · Why Devin | **9 · 10** | 138 |
+| 3:25 – 4:25 · Why Devin | **9 · 10** | 153 |
 | 4:25 – 5:00 · When — next | **11 · 12** | 86 |
 
 **Slide 5 is also the fallback.** It is a run that already finished, so it is
@@ -128,48 +128,65 @@ before the close. A demo that admits it is waiting beats a silence.
 
 ## 0:35 – 2:45 · How — the live run · slide 4, then the browser, then 5
 
+Six beats, in the order they happen. Between them you are watching, not talking.
+
 **▸ Slide 4 — One button, and then we watch.** Read nothing off it.
 
 > "One button, and we watch. Nothing here is stubbed."
 
-**Click *Find something to fix*.** Then the fork's issue list, and wait.
+### 1 · Find something to fix
 
-> "That session has no idea what is wrong with this repo. It reads it and files
-> what it finds."
+**Click the button.**
 
-**When the issue appears**, open it and scroll to the fenced block.
+> "That session has no idea what is wrong with this repo. It goes and reads it."
 
-> "The part that matters is the bottom: a **contract** — what to change, what
-> not to touch, and the commands that constitute done. No contract, no session.
-> That gate has refused four hundred and thirty-four issues here."
+### 2 · What Devin is doing, from Devin's side
 
-**Dashboard.** Point at the row appearing, then wait for the pull request. This
-is the long wait. Say one number and stop talking: merge rate, not pull request
-count — or ACUs reading *not reported for this account*, because "not measured"
-and "free" are different claims.
+**Open the session link** — every dashboard row carries one — then the *As
+reported by Devin* panel at the foot of the page.
 
-**When CI goes green**, open the check.
+> "The same work, counted by Devin instead of by us. If the prompts and tags we
+> claim to have sent are not the ones it received, **this is where that shows
+> up** — checkable against Devin's own dashboard, without taking my word for it."
+
+### 3 · It files the issue
+
+**Open the new issue** and scroll to the fenced block.
+
+> "A real defect, and at the bottom a **contract**: what to change, what not to
+> touch, and the commands that constitute done. No contract, no session — that
+> gate has refused four hundred and thirty-four issues here."
+
+### 4 · A pull request against that issue
+
+**Open the PR.** Point at the body.
+
+> "It carries the commands it ran and what they printed. Not a summary of them."
+
+### 5 · Wait for CI to go green
+
+**Open the check.** The long wait — say one number, then stop talking.
 
 > "That job read the same contract off the same issue and ran the same commands
 > again. **One definition of done, checked by two parties — one with no stake in
 > the answer.**"
 
-**When the review appears**, open it.
+### 6 · It merges its own pull request
 
-> "A second session. It never saw the change being made — only the diff and the
-> contract."
+*(With `REVIEW_AGENT` on, a second session reviews first and its verdict releases
+the merge. If that is on camera: "a second session, which never saw the change
+being made — only the diff and the contract.")*
 
-**When it merges**, back to the dashboard.
+> "Then it merges its own pull request. Autopilot **asked** — it never records a
+> merge. That comes back from GitHub like any other observer, which is why a
+> merge that never happened shows up as a pull request still open."
 
-> "Autopilot *asked* for that merge. It never records one — the merge is read
-> back from GitHub like any other observer."
+**▸ Slide 5 — Nobody had noticed this bug at 08:56.** Close on it — and put it up
+early, without apology, if the live run is still going.
 
-**▸ Slide 5 — Nobody had noticed this bug at 08:56.** Put it up to close the
-section — and put it up early, without apology, if the live run is still going.
-
-> "One that finished, end to end. At 08:56 nobody knew that bug existed; merged
-> at 09:35. The only human action was the approval — and it was **not required**.
-> The next one merged on the reviewing agent's verdict alone."
+> "At 08:56 nobody knew that bug existed; merged at 09:35. The only human action
+> was the approval — and it was **not required**. The next one merged on the
+> reviewing agent's verdict alone."
 
 ---
 
