@@ -41,6 +41,62 @@ describe('config parsing', () => {
     ]);
   });
 
+  /**
+   * Compose substitutes `${VAR:-}` to an empty string and passes it anyway, so
+   * "not configured" reaches the process as `''`, not as absent. A schema that
+   * only accepts `undefined` therefore refuses to boot on a blank value — which
+   * is exactly how adding DEVIN_API_VERSION to the compose file put the
+   * container in a crash loop on the default, credential-free path.
+   */
+  it('treats a variable set to nothing as unset', () => {
+    const blanked = {
+      ...base,
+      DEVIN_API_VERSION: '',
+      DEVIN_API_KEY: '',
+      DEVIN_ORG_ID: '',
+      DEVIN_PLAYBOOK_ID: '',
+      DEVIN_API_BASE_URL: '',
+      GITHUB_TOKEN: '',
+      GITHUB_WEBHOOK_SECRET: '',
+    };
+    expect(() => __buildConfig(blanked)).not.toThrow();
+
+    const cfg = __buildConfig(blanked);
+    expect(cfg.DEVIN_API_VERSION).toBeUndefined();
+    expect(cfg.GITHUB_TOKEN).toBeUndefined();
+    // A blank still falls back to the default rather than failing `.url()`.
+    expect(cfg.DEVIN_API_BASE_URL).toBe('https://api.devin.ai');
+  });
+
+  /**
+   * The same rule has to hold for the fields that carry a default, or the fix
+   * just moves the crash: a blank `LOG_LEVEL` fails the enum exactly like a
+   * blank `DEVIN_API_VERSION` did, and a blank `DATABASE_PATH` is worse than a
+   * crash — it boots and writes the database to nowhere.
+   */
+  it('falls back to the default when a variable with one is set to nothing', () => {
+    const cfg = __buildConfig({
+      DATABASE_PATH: '',
+      LOG_LEVEL: '',
+      DEVIN_MODE: '',
+      AUTOPILOT_LABEL: '',
+      HOST: '',
+      PORT: '',
+    });
+    expect(cfg.LOG_LEVEL).toBe('info');
+    expect(cfg.DEVIN_MODE).toBe('mock');
+    expect(cfg.DATABASE_PATH).toBe('./data/autopilot.db');
+    expect(cfg.AUTOPILOT_LABEL).toBe('autopilot');
+    expect(cfg.HOST).toBe('0.0.0.0');
+    expect(cfg.PORT).toBe(8080);
+  });
+
+  it('still rejects a value that is present and wrong', () => {
+    expect(() => __buildConfig({ ...base, DEVIN_API_VERSION: 'v2' })).toThrow(
+      /Invalid configuration/,
+    );
+  });
+
   it('rejects a malformed value', () => {
     expect(() => __buildConfig({ ...base, PORT: 'not-a-number' })).toThrow(/Invalid configuration/);
   });
